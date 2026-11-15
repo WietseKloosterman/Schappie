@@ -42,6 +42,8 @@
   .chip.op { background: var(--op-bg); color: var(--op); }
   .item { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 12px; }
   .item + .item { border-top: 1px solid var(--line-soft); }
+  .group-head { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: none; padding: 12px 16px 4px; letter-spacing: 0.2px; }
+  .group-head:not(:first-child) { border-top: 1px solid var(--line); margin-top: 4px; }
   .thumb { width: 44px; height: 44px; border-radius: 10px; background: #FFFFFF; border: 1px solid var(--line-soft); object-fit: contain; flex-shrink: 0; }
   .thumb.ph { display: flex; align-items: center; justify-content: center; background: var(--chip); color: var(--muted); font-size: 16px; font-weight: 600; border: 0; }
   .item-main { flex: 1; min-width: 0; min-height: 48px; text-align: left; background: none; border: 0; padding: 0; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
@@ -61,6 +63,9 @@
   .field { display: flex; flex-direction: column; gap: 8px; }
   .field > label, .label { font-size: 14px; font-weight: 600; color: var(--text-2); }
   .input { height: 48px; border: 1px solid var(--input); border-radius: 12px; padding: 0 14px; font-size: 16px; background: #FFFFFF; width: 100%; min-width: 0; }
+  input[type="date"].input, input[type="month"].input { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; width: 100%; text-align: left; line-height: 46px; }
+  input[type="date"]::-webkit-date-and-time-value, input[type="month"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+  .field { min-width: 0; }
   .input:focus, button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
   .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .note { margin: 0; font-size: 13px; color: var(--green-dark); background: var(--green-soft); border-radius: 10px; padding: 10px 12px; }
@@ -117,7 +122,7 @@ const SUPABASE_URL = 'https://rvucshogutdqwjfngarc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_g6dwmq_7hs8li_S_ICSwXQ_Qe400crT';
 // ==================================================================================
 
-const APP_VERSION = '8';
+const APP_VERSION = '9';
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const PLACES = [['koelkast', 'Koelkast'], ['vriezer', 'Vriezer'], ['kast', 'Kast']];
@@ -177,28 +182,38 @@ function expText(s) {
 function stockG(p) {
   if (p.track === 'gram') return p.grams;
   if (p.track === 'aantal') return p.count * p.grams_per_unit;
-  return p.full_grams * FRAC[p.level];
+  return p.full_grams * (FRAC[p.level] + Math.max(0, (p.count || 1) - 1));
 }
 function fmtG(g) { return g >= 1000 ? `${String(Math.round(g / 100) / 10).replace('.', ',')} kg` : `${Math.round(g)} g`; }
 function amountText(p) {
   if (p.track === 'gram') return fmtG(p.grams);
   if (p.track === 'aantal') return `${p.count} ${p.count === 1 ? single(p.unit) : p.unit}`;
-  return p.level;
+  return (p.count || 1) > 1 ? `${p.level} +${p.count - 1}` : p.level;
+}
+const MAANDEN = ['jan', 'feb', 'mrt', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+const monthLabel = (s) => { const d = parseDate(s); return `${MAANDEN[d.getMonth()]} ${d.getFullYear()}`; };
+function expLabel(p, e) {
+  const opened = p.opened_on && p.open_shelf_days && e !== p.expires_on;
+  if (!opened && p.expires_precision === 'month' && daysUntil(e) > 31) return `t/m ${monthLabel(e)}`;
+  const t = expText(e);
+  return !opened && (p.expEstimated ?? p.expires_estimated) && daysUntil(e) > 3 ? `± ${t.replace(/^Nog /, '')}` : t;
 }
 function chip(p) {
   if (stockG(p) <= 0) return { text: 'Op', cls: 'op' };
   const e = effExpiry(p);
   if (!e) return { text: 'Geen datum', cls: '' };
-  return { text: expText(e), cls: daysUntil(e) <= 3 ? 'warn' : '' };
+  return { text: expLabel(p, e), cls: daysUntil(e) <= 3 ? 'warn' : '' };
 }
+const lastDayOfMonth = (ym) => { const [y, m] = ym.split('-').map(Number); return iso(new Date(y, m, 0)); };
 function convert(p, mode) {
   const g = stockG(p);
-  return {
-    ...p, track: mode,
-    count: Math.round(g / p.grams_per_unit),
-    grams: Math.round(g / 10) * 10,
-    level: g >= p.full_grams * 0.66 ? 'Vol' : g > 0 ? 'Half' : 'Leeg'
-  };
+  const n = { ...p, track: mode, count: Math.round(g / p.grams_per_unit), grams: Math.round(g / 10) * 10 };
+  if (mode === 'niveau') {
+    n.count = Math.max(1, Math.ceil(g / p.full_grams - 0.01));
+    const rest = g - (n.count - 1) * p.full_grams;
+    n.level = rest >= p.full_grams * 0.66 ? 'Vol' : rest > 0 ? 'Half' : 'Leeg';
+  }
+  return n;
 }
 function movePlace(p, place) {
   if (place === p.place) return { p, note: '' };
@@ -241,12 +256,73 @@ async function loadProducts() {
   if (error) { toast('Laden mislukt: ' + error.message); return; }
   state.products = data;
   if (state.screen === 'voorraad') render();
-  setTimeout(backfillImages, 1500);
+  setTimeout(async () => { await cleanupOnce(); backfillImages(); }, 800);
   try {
     const mem = await db.from('product_memory').select('barcode, data');
     if (!mem.error && mem.data) state.memory = { ...state.memory, ...Object.fromEntries(mem.data.map((m) => [m.barcode, m.data])) };
   } catch (e) { /* geheugen is optioneel */ }
 }
+// Eenmalig opschonen van producten die met een oudere versie zijn toegevoegd
+let cleanupRunning = false;
+async function cleanupOnce() {
+  let done = false;
+  try { done = localStorage.getItem('schappie-opgeschoond-9') === '1'; } catch (e) { /* geen opslag */ }
+  if (done || cleanupRunning || !state.products.length) return;
+  cleanupRunning = true;
+  try { localStorage.setItem('schappie-opgeschoond-9', '1'); } catch (e) { /* geen opslag */ }
+  let changed = 0;
+  // 1. per product: naam, ingrediënten en (als je het nooit hebt aangepast) de indeling volgens de nieuwe regels
+  for (const p of [...state.products]) {
+    const ch = {};
+    const nm = cleanName(p.name, p.brand);
+    if (nm && nm !== p.name) ch.name = nm;
+    let ing = p.ingredients ? cleanIngredients(p.ingredients) : null;
+    if (p.barcode) {
+      try {
+        const prod = await lookupOpenFoodFacts(p.barcode);
+        if (prod) ing = cleanIngredients(prod.ingredients_text_nl || (prod.lang === 'nl' ? prod.ingredients_text : ''));
+      } catch (e) { /* offline: laat staan */ }
+    }
+    if ((ing || null) !== (p.ingredients || null)) ch.ingredients = ing;
+    const untouched = p.created_at && p.updated_at && p.created_at === p.updated_at;
+    if (untouched) {
+      const tmp = { ...p };
+      const r = applyRules(tmp, `${p.name} ${p.categories || ''}`, parseQuantity({ quantity: p.quantity_text || '' }, p.name));
+      if (r && r.re) {
+        const opened = p.opened_on || (p.track === 'niveau' && p.level !== 'Vol');
+        if (opened && r.openPlace) tmp.place = r.openPlace;
+        const fields = ['place', 'open_shelf_days', 'freezable'];
+        if (tmp.track !== p.track) fields.push('track', 'unit', 'count', 'grams', 'grams_per_unit', 'full_grams', 'level');
+        else if (tmp.track === 'aantal' && p.count === 1 && tmp.count > 1) fields.push('unit', 'count', 'grams_per_unit');
+        for (const f of fields) if (tmp[f] !== undefined && tmp[f] !== p[f]) ch[f] = tmp[f];
+        if (r.days && (!p.expires_on || (ch.place && ch.place !== p.place && !opened))) {
+          ch.expires_on = addDays(iso(new Date(p.created_at)), r.days); ch.expires_estimated = true;
+        }
+      }
+    }
+    if (Object.keys(ch).length) {
+      const { error } = await db.from('products').update(ch).eq('id', p.id);
+      if (!error) { Object.assign(p, ch); changed++; }
+    }
+  }
+  // 2. dubbele barcodes samenvoegen tot één product
+  const byCode = {};
+  for (const p of state.products) if (p.barcode) (byCode[p.barcode] = byCode[p.barcode] || []).push(p);
+  for (const list of Object.values(byCode)) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    const keep = list[0];
+    const ch = keep.track === 'gram' ? { grams: list.reduce((t, x) => t + (x.grams || 0), 0) }
+      : keep.track === 'aantal' ? { count: list.reduce((t, x) => t + (x.count || 0), 0) }
+      : { count: list.reduce((t, x) => t + (x.count || 1), 0) };
+    const { error } = await db.from('products').update(ch).eq('id', keep.id);
+    if (error) continue;
+    for (const x of list.slice(1)) { await db.from('products').delete().eq('id', x.id); changed++; }
+  }
+  cleanupRunning = false;
+  if (changed) { await loadProducts(); toast(`Voorraad opgeschoond: ${changed} ${changed === 1 ? 'aanpassing' : 'aanpassingen'}`); }
+}
+
 let backfillDone = false;
 async function backfillImages() {
   if (backfillDone) return;
@@ -301,7 +377,7 @@ function viewVoorraad() {
 
   const tabs = PLACES.map(([id, label]) => `<button data-action="tab" data-value="${id}" aria-pressed="${state.tab === id}">${label} <span class="count">${state.products.filter((p) => p.place === id).length}</span></button>`).join('');
 
-  const rows = list.map((p) => {
+  const rowHtml = (p) => {
     const c = chip(p);
     const control = p.track === 'niveau'
       ? `<div class="lvl">${LEVELS.map((L) => `<button data-action="level" data-id="${p.id}" data-value="${L}" aria-pressed="${p.level === L}">${L}</button>`).join('')}</div>`
@@ -315,7 +391,16 @@ function viewVoorraad() {
         <span class="item-name">${esc(p.name)}</span>
         <span class="row" style="gap:6px"><span class="chip ${c.cls}">${esc(c.text)}</span>${p.nutriscore ? `<span class="ns ns-${p.nutriscore}" aria-label="Nutri-Score ${p.nutriscore.toUpperCase()}">${p.nutriscore.toUpperCase()}</span>` : ''}${p.opened_on ? '<span class="muted" style="font-size:12px">Geopend</span>' : ''}</span>
       </button>${control}</div>`;
-  }).join('');
+  };
+  // Per categorie, binnen een categorie op datum (eerst wat het eerst verloopt)
+  const order = Object.fromEntries(GROUPS.map(([k], i) => [k, i]));
+  const byGroup = {};
+  for (const p of list) (byGroup[groupOf(p)] = byGroup[groupOf(p)] || []).push(p);
+  const sortKey = (p) => (stockG(p) <= 0 ? '9999' : effExpiry(p) || '9998');
+  const rows = Object.keys(byGroup).sort((a, b) => order[a] - order[b]).map((g) =>
+    `<div class="group-head">${esc(GROUP_LABEL[g] || 'Overig')}</div>` +
+    byGroup[g].sort((a, b) => sortKey(a).localeCompare(sortKey(b)) || a.name.localeCompare(b.name)).map(rowHtml).join('')
+  ).join('');
 
   return `<main class="wrap">
     <div class="between"><h1>Voorraad</h1>
@@ -368,7 +453,7 @@ function viewForm() {
 
       ${nevoSection(p)}
 
-      <div class="field"><label for="f-exp">Houdbaar tot ${p.expEstimated ? '<span class="muted" style="font-weight:400">(geschat)</span>' : ''}</label><input class="input" id="f-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}"><a href="https://www.voedingscentrum.nl/nl/bewaarwijzer.aspx" target="_blank" rel="noopener" style="font-size:13px">Bewaaradvies opzoeken in de Bewaarwijzer van het Voedingscentrum</a></div>
+      ${expField(p, 'f', true)}
 
       <div class="field"><span class="label">Geopend?</span>
         <div class="row" style="flex-wrap:wrap">
@@ -405,6 +490,14 @@ const NUT_ROWS = [['kcal', 'Energie', 'kcal'], ['vet', 'Vet', 'g'], ['verzadigd'
 const hasInfo = (p) => INFO_FIELDS.filter((f) => f !== 'nutrition_source' && f !== 'nevo_code').some((f) => p[f] != null && p[f] !== '');
 const NEVO_REF = 'NEVO-online versie 2025/9.0, RIVM, Bilthoven';
 
+// Alleen Nederlandse, leesbare ingrediëntenlijsten bewaren
+function cleanIngredients(t) {
+  const x = String(t || '').replace(/\s*\n\s*/g, ', ').trim();
+  if (!x || x.length < 3) return null;
+  if (/\bkj\b|kcal|brennwert|nährwert|nutritional|energy|zutaten|ingredients:|per 100 ?g/i.test(x)) return null;
+  if (x.length > 1200) return null;
+  return x.slice(0, 1200);
+}
 function offToInfo(prod) {
   const n = prod.nutriments || {};
   const pick = (k) => { const v = Number(n[k + '_100g']); return n[k + '_100g'] === undefined || n[k + '_100g'] === '' || !isFinite(v) ? null : Math.round(v * 10) / 10; };
@@ -421,7 +514,7 @@ function offToInfo(prod) {
     nutriscore: /^[a-e]$/.test(grade) ? grade : null,
     nova_group: [1, 2, 3, 4].includes(nova) ? nova : null,
     categories: String(prod.categories || '').split(',').map((x) => x.trim()).filter(Boolean).slice(-3).join(', ').slice(0, 200) || null,
-    ingredients: String(prod.ingredients_text_nl || prod.ingredients_text || '').trim().slice(0, 2000) || null,
+    ingredients: cleanIngredients(prod.ingredients_text_nl || (prod.lang === 'nl' ? prod.ingredients_text : '')),
     allergens: allergens.length ? [...new Set(allergens)].join(', ') : null,
     nutrition: Object.values(nutrition).some((v) => v != null) ? nutrition : null,
     nutrition_source: Object.values(nutrition).some((v) => v != null) ? 'off' : null,
@@ -444,7 +537,7 @@ function infoCard(p) {
       ${p.image_url ? `<img src="${esc(p.image_url)}" alt="" width="64" height="64" style="object-fit:contain;border-radius:8px;background:#FFFFFF;flex-shrink:0">` : ''}
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
         ${meta ? `<span style="font-size:14px;font-weight:500">${meta}</span>` : ''}
-        ${p.categories ? `<span class="muted">${esc(p.categories)}</span>` : ''}
+        <span class="muted">${esc(GROUP_LABEL[groupOf(p)] || 'Overig')}${ruleFor(p) && ruleFor(p).notCold ? ' · hoeft ongeopend niet koel' : ''}</span>
         <div class="row" style="gap:6px;flex-wrap:wrap">
           ${p.nutriscore ? `<span class="ns ns-${p.nutriscore}" style="font-size:12px;padding:3px 8px">Nutri-Score ${p.nutriscore.toUpperCase()}</span>` : ''}
           ${p.nova_group ? `<span class="chip">NOVA ${p.nova_group} · ${NOVA[p.nova_group]}</span>` : ''}
@@ -676,6 +769,20 @@ function viewScan() {
   </main>`;
 }
 
+function expField(p, prefix, withLink) {
+  const est = (p.expEstimated ?? p.expires_estimated) && p.expires_on;
+  const month = p.expires_precision === 'month';
+  const input = month
+    ? `<input class="input" id="${prefix}-exp" data-field="exp_month" type="month" value="${p.expires_on ? p.expires_on.slice(0, 7) : ''}">`
+    : `<input class="input" id="${prefix}-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}">`;
+  return `<div class="field">
+    <label for="${prefix}-exp">Houdbaar tot ${est ? '<span class="muted" style="font-weight:400">(geschat, tik om aan te passen)</span>' : ''}</label>
+    ${input}
+    <button type="button" class="link" style="min-height:36px;font-size:13px" data-action="exp-precision">${month ? 'Er staat een hele datum op' : 'Er staan alleen maand en jaar op'}</button>
+    ${withLink ? '<a href="https://www.voedingscentrum.nl/nl/bewaarwijzer.aspx" target="_blank" rel="noopener" style="font-size:13px">Bewaaradvies opzoeken in de Bewaarwijzer van het Voedingscentrum</a>' : ''}
+  </div>`;
+}
+
 function recentHtml() {
   if (!state.recent.length) return '';
   return '<span class="label">Net toegevoegd</span>' + state.recent.slice(-5).reverse().map((r) => `<span>${esc(r)}</span>`).join('');
@@ -700,7 +807,7 @@ function viewConfirm() {
       </div>
       <div class="field"><span class="label">Waar leg je het neer?</span><div class="seg" role="group" aria-label="Plek">${places}</div>
         ${state.note ? `<p class="note">${esc(state.note)}</p>` : ''}</div>
-      <div class="field"><label for="c-exp">Houdbaar tot ${p.expEstimated ? '<span class="muted" style="font-weight:400">(geschat, tik om aan te passen)</span>' : ''}</label><input class="input" id="c-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}"></div>
+      ${expField(p, 'c', false)}
       <div class="between"><span class="label">Hoeveelheid</span><span style="font-size:15px;font-weight:500">${esc(amountText(p))}</span></div>
       ${p.open_shelf_days ? `<div class="between"><span class="label">Na openen goed</span><span style="font-size:15px">${p.open_shelf_days} ${p.open_shelf_days === 1 ? 'dag' : 'dagen'}</span></div>` : ''}
     </section>
@@ -732,7 +839,8 @@ function blankProduct() {
   return {
     brand: null, quantity_text: null, image_url: null, nutriscore: null, nova_group: null, categories: null, ingredients: null, allergens: null, nutrition: null,
     name: '', place: state.tab, track: 'aantal', count: 1, unit: 'stuks', grams: 0, level: 'Vol',
-    grams_per_unit: 100, full_grams: 500, expires_on: null, open_shelf_days: null, opened_on: null, freezable: true
+    grams_per_unit: 100, full_grams: 500, expires_on: null, open_shelf_days: null, opened_on: null, freezable: true,
+    expires_estimated: false, expires_precision: 'day'
   };
 }
 
@@ -804,69 +912,104 @@ async function stopScan() {
 
 // ---------- slimme regels ----------
 // place = plek, track = bijhouden in, days = houdbaar (ongeopend) vanaf vandaag, open = dagen goed na openen, freeze = kan in vriezer
+// Groepen voor het sorteren van de voorraadlijst (in deze volgorde)
+const GROUPS = [
+  ['zuivel', 'Zuivel en eieren'], ['kaas', 'Kaas'], ['vlees', 'Vlees, vis en vega'], ['beleg', 'Vleeswaren en salades'],
+  ['groente', 'Groente en fruit'], ['brood', 'Brood, ontbijt en beleg'], ['dranken', 'Dranken'], ['sauzen', 'Sauzen en smaakmakers'],
+  ['voorraad', 'Pasta, rijst en bakken'], ['conserven', 'Conserven'], ['snacks', 'Snacks en snoep'], ['kruiden', 'Kruiden en specerijen'],
+  ['koffie', 'Koffie en thee'], ['diepvries', 'Diepvries'], ['overig', 'Overig']
+];
+const GROUP_LABEL = Object.fromEntries(GROUPS);
+// place = plek, track = bijhouden in, days = houdbaar (ongeopend) vanaf vandaag, open = dagen goed na openen,
+// freeze = kan in vriezer, openPlace = waar het na openen hoort (advies Voedingscentrum), group = categorie
 const RULES = [
-  { re: /frozen|diepvries|bevroren|surgel|\bijs\b|ice-cream|ijsjes/, place: 'vriezer', days: 180, open: 30, freeze: true },
-  { re: /geraspt|grated|shredded/, place: 'koelkast', days: 28, open: 4, freeze: true },
-  { re: /plakken|sliced|tranches/, place: 'koelkast', track: 'aantal', unit: 'plakken', gpu: 20, days: 21, open: 4, freeze: true },
-  { re: /smeerkaas|roomkaas|cream-cheese|cottage|mozzarella|ricotta|feta|burrata|mascarpone/, place: 'koelkast', days: 14, open: 4, freeze: false },
-  { re: /kaas|cheese/, place: 'koelkast', days: 35, open: 14, freeze: true },
-  { re: /\bham\b|hams|salami|vleeswaren|cold-cut|rookvlees|leverworst|cervelaat|filet-americain|ontbijtspek|bacon|spekreep/, place: 'koelkast', days: 10, open: 4, freeze: true },
-  { re: /vleesvervanger|meat-analogue|meat-substitute|vegetarische|vegan-burger|tofu|tempeh|seitan|vega-?burger|vegetarisch-gehakt|kipstuckjes-vega/, place: 'koelkast', days: 14, open: 2, freeze: true },
-  { re: /kipfilet|kipdij|\bkip\b|chicken|gehakt|minced|biefstuk|steak|vlees|meat|beef|pork|varken|rund|worst|sausage|schnitzel|\bvis\b|fish|zalm|salmon|kabeljauw|garnal|shrimp/, place: 'koelkast', days: 4, open: 1, freeze: true },
-  { re: /eieren|\beggs?\b/, place: 'koelkast', track: 'aantal', unit: 'stuks', gpu: 60, days: 28, open: null, freeze: false },
-  { re: /yoghurt|yogurt|kwark|skyr|quark/, place: 'koelkast', days: 14, open: 4, freeze: false },
-  { re: /\bvla\b|pudding|custard|toetje/, place: 'koelkast', days: 10, open: 3, freeze: false },
-  { re: /slagroom|kookroom|creme-fraiche|crème|zure-room|sour-cream|\bcream\b|creams/, place: 'koelkast', days: 14, open: 4, freeze: false },
-  { re: /houdbare|\buht\b|long-life/, place: 'kast', track: 'niveau', days: 120, open: 4, freeze: false },
-  { re: /melk|milk|chocomel|oat-drink|haverdrank|soja-?drink|plant-based-milk|amandeldrink/, place: 'koelkast', track: 'niveau', days: 8, open: 4, freeze: true },
-  { re: /margarine|halvarine|bewust|boter|butter|smeerbaar|spreadable-fats|plant-based-spreads|becel|blue-band/, place: 'koelkast', days: 60, open: 30, freeze: true },
-  { re: /versgeperst|smoothie|fresh-juice|vers-sap/, place: 'koelkast', track: 'niveau', days: 7, open: 3, freeze: false },
-  { re: /\bsap\b|juice|nectar/, place: 'kast', track: 'niveau', days: 240, open: 5, freeze: false, openPlace: 'koelkast' },
-  { re: /siroop|syrup|limonade/, place: 'kast', track: 'niveau', days: 365, open: 7, freeze: false, openPlace: 'koelkast' },
-  { re: /frisdrank|soda|\bcola\b|sinas|soft-drink|bruiswater|mineraalwater|\bwater\b|waters/, place: 'kast', track: 'niveau', days: 365, open: 3, freeze: false },
-  { re: /\bbier\b|beer|\bwijn\b|wine/, place: 'kast', days: 365, open: 3, freeze: false },
-  { re: /pesto/, place: 'kast', track: 'niveau', days: 270, open: 7, freeze: true, openPlace: 'koelkast' },
-  { re: /hummus|\bdip\b|dips|salade\b|spread-for-bread|tapenade|guacamole/, place: 'koelkast', days: 10, open: 4, freeze: false },
-  { re: /ketchup|mosterd|mustard/, place: 'kast', track: 'niveau', days: 365, open: 90, freeze: false, openPlace: 'koelkast' },
-  { re: /mayonaise|mayonnaise|fritessaus|sauces-for-fries|satesaus|peanut-sauce/, place: 'kast', track: 'niveau', days: 270, open: 30, freeze: false, openPlace: 'koelkast' },
-  { re: /tomatenpuree|tomato-paste/, place: 'kast', days: 540, open: 5, freeze: true, openPlace: 'koelkast' },
-  { re: /passata|pastasaus|pasta-sauce|\bsaus\b|sauce|currypasta|curry-paste/, place: 'kast', track: 'niveau', days: 365, open: 5, freeze: true, openPlace: 'koelkast' },
-  { re: /bonen|beans|kikkererwt|chickpea|linzen|lentil|\bmais\b|\bcorn\b|canned|conserven|tomatenblokjes|chopped-tomato|tonijn|tuna/, place: 'kast', track: 'aantal', unit: 'blikken', days: 730, open: 3, freeze: false, openPlace: 'koelkast' },
-  { re: /\bjam\b|jams|confiture|marmelade/, place: 'kast', track: 'niveau', days: 540, open: 60, freeze: false, openPlace: 'koelkast' },
-  { re: /honing|honey|stroop/, place: 'kast', track: 'niveau', days: 730, open: 365, freeze: false },
-  { re: /pindakaas|peanut-butter|hazelnut-spread|chocopasta|nutella|speculoospasta/, place: 'kast', track: 'niveau', days: 270, open: 90, freeze: false },
-  { re: /hagelslag|sprinkles|vlokken|muisjes/, place: 'kast', track: 'niveau', days: 365, open: 180, freeze: false },
-  { re: /brood|bread|bolletjes|wraps|tortilla|\bpita\b|croissant|baguette/, place: 'kast', days: 4, open: null, freeze: true },
-  { re: /chips|crisps|nootjes|pinda's|pindas|\bnuts\b|noten/, place: 'kast', days: 120, open: 14, freeze: false },
-  { re: /koek|biscuit|cookie|crackers|beschuit|rusk|chocola|chocolate|snoep|candy|candies/, place: 'kast', days: 180, open: 21, freeze: false },
-  { re: /muesli|granola|cereal|ontbijtgranen|havermout|oat-flakes|cornflakes/, place: 'kast', track: 'niveau', days: 270, open: 60, freeze: false },
-  { re: /koffie|coffee/, place: 'kast', track: 'niveau', days: 365, open: 30, freeze: false },
-  { re: /\bthee\b|\btea\b|teas/, place: 'kast', days: 730, open: 365, freeze: false },
-  { re: /\bolie\b|\boil\b|oils|azijn|vinegar/, place: 'kast', track: 'niveau', days: 540, open: 180, freeze: false },
-  { re: /rijst|\brice\b|pasta|spaghetti|penne|macaroni|fusilli|noodle|\bmie\b|couscous|bulgur|quinoa|\bmeel\b|flour|suiker|sugar|\bbloem\b/, place: 'kast', track: 'gram', days: 540, open: 180, freeze: false },
-  { re: /kruiden|herbs|spices|specerijen|bouillon|stock-cubes|\bzout\b|\bpeper\b/, place: 'kast', track: 'niveau', days: 730, open: 365, freeze: false },
-  { re: /banaan|banana|aardappel|potato|\bui\b|\buien\b|onion|knoflook|garlic/, place: 'kast', days: 14, open: 3, freeze: false },
-  { re: /appel|apple|\bpeer\b|pear|sinaasappel|orange|citroen|lemon|druif|grape|aardbei|strawberr|fruit|bessen|berries/, place: 'koelkast', days: 7, open: 2, freeze: true },
-  { re: /\bsla\b|salad|spinazie|spinach|tomaat|tomato|komkommer|cucumber|paprika|courgette|broccoli|bloemkool|wortel|carrot|groente|vegetable|champignon|mushroom/, place: 'koelkast', days: 7, open: 3, freeze: true }
+  { re: /frozen|diepvries|bevroren|surgel|\bijs\b|ice-cream|ijsjes/, place: 'vriezer', days: 180, open: 30, freeze: true, group: 'diepvries' },
+  { re: /mix voor|mix-voor|sausmix|saus-mix|kruidenmix|seasoning|dry-mix|\bfix\b|bouillon|soep in zak|soepmix|marinade-mix|dry-sauce/, place: 'kast', days: 365, open: 30, freeze: false, group: 'sauzen' },
+  { re: /pannenkoek|pancake|bakmix|cake-?mix|beslag-mix|wafelmix/, place: 'kast', days: 365, open: 30, freeze: false, group: 'voorraad' },
+  { re: /ketjap|ketchap|kecap|soja ?saus|sojasaus|soy[- ]sauce|worcester|vissaus|fish-sauce|oestersaus|teriyaki/, place: 'kast', track: 'niveau', days: 730, open: 180, freeze: false, group: 'sauzen' },
+  { re: /sambal|chilisaus|chili-sauce|sriracha|harissa/, place: 'kast', track: 'niveau', days: 540, open: 90, freeze: false, openPlace: 'koelkast', group: 'sauzen' },
+  { re: /citroensap|limoensap|lemon[- ]juice|lime[- ]juice/, place: 'kast', track: 'niveau', days: 365, open: 60, freeze: false, openPlace: 'koelkast', group: 'sauzen' },
+  { re: /geraspt|grated|shredded/, place: 'koelkast', days: 28, open: 4, freeze: true, group: 'kaas' },
+  { re: /(kaas|cheese)[^,]*(plakken|sliced|tranches)|(plakken|sliced)[^,]*(kaas|cheese)|sliced-cheeses/, place: 'koelkast', track: 'aantal', unit: 'plakken', gpu: 20, days: 21, open: 4, freeze: true, group: 'kaas' },
+  { re: /smeerkaas|roomkaas|cream-cheese|cottage|mozzarella|ricotta|feta|burrata|mascarpone/, place: 'koelkast', days: 14, open: 4, freeze: false, group: 'kaas' },
+  { re: /kaas|cheese/, place: 'koelkast', days: 35, open: 14, freeze: true, group: 'kaas' },
+  { re: /vleesvervanger|meat-analogue|meat-substitute|vegetarische|vegan-burger|tofu|tempeh|seitan|vega-?burger|vegetarisch-gehakt/, place: 'koelkast', days: 14, open: 2, freeze: true, group: 'vlees' },
+  { re: /\bham\b|hams|salami|vleeswaren|cold-cut|rookvlees|leverworst|cervelaat|filet-americain|ontbijtspek|bacon|spekreep|hummus|\bdip\b|dips|salade\b|spread-for-bread|tapenade|guacamole/, place: 'koelkast', days: 10, open: 4, freeze: false, group: 'beleg' },
+  { re: /kipfilet|kipdij|\bkip\b|chicken|gehakt|minced|biefstuk|steak|vlees|meat|beef|pork|varken|rund|worst|sausage|schnitzel|\bvis\b|fish|zalm|salmon|kabeljauw|garnal|shrimp/, place: 'koelkast', days: 4, open: 1, freeze: true, group: 'vlees' },
+  { re: /eieren|\beggs?\b/, place: 'koelkast', track: 'aantal', unit: 'stuks', gpu: 60, days: 28, open: null, freeze: false, group: 'zuivel' },
+  { re: /yoghurt|yogurt|kwark|skyr|quark/, place: 'koelkast', days: 14, open: 4, freeze: false, group: 'zuivel' },
+  { re: /\bvla\b|pudding|custard|toetje/, place: 'koelkast', days: 10, open: 3, freeze: false, group: 'zuivel' },
+  { re: /slagroom|kookroom|creme-fraiche|crème|zure-room|sour-cream|\bcream\b|creams/, place: 'koelkast', days: 14, open: 4, freeze: false, group: 'zuivel' },
+  // Houdbare melk en drankjes: hoeven niet koel, maar staan meestal in de koelkast
+  { re: /houdbare|\buht\b|long-life|langlekker/, place: 'koelkast', track: 'niveau', days: 120, open: 4, freeze: false, group: 'zuivel', notCold: true },
+  { re: /melk|milk|chocomel|oat-drink|haverdrank|soja-?drink|plant-based-milk|amandeldrink/, place: 'koelkast', track: 'niveau', days: 8, open: 4, freeze: true, group: 'zuivel' },
+  { re: /margarine|halvarine|bewust|boter|butter|smeerbaar|spreadable-fats|plant-based-spreads|becel|blue-band/, place: 'koelkast', days: 60, open: 30, freeze: true, group: 'zuivel' },
+  { re: /versgeperst|smoothie|fresh-juice|vers-sap/, place: 'koelkast', track: 'niveau', days: 7, open: 3, freeze: false, group: 'dranken' },
+  { re: /\bsap\b|juice|nectar/, place: 'koelkast', track: 'niveau', days: 240, open: 5, freeze: false, group: 'dranken', notCold: true },
+  { re: /siroop|syrup|limonade/, place: 'kast', track: 'niveau', days: 365, open: 30, freeze: false, openPlace: 'koelkast', group: 'dranken' },
+  { re: /frisdrank|soda|\bcola\b|sinas|soft-drink|bruiswater|mineraalwater|\bwater\b|waters|ice-?tea|energy-?drink/, place: 'koelkast', track: 'niveau', days: 365, open: 3, freeze: false, group: 'dranken', notCold: true },
+  { re: /\bbier\b|beer|pils|radler/, place: 'koelkast', days: 270, open: 1, freeze: false, group: 'dranken', notCold: true },
+  { re: /\bwijn\b|wine/, place: 'kast', days: 730, open: 3, freeze: false, group: 'dranken' },
+  { re: /pesto/, place: 'kast', track: 'niveau', days: 270, open: 7, freeze: true, openPlace: 'koelkast', group: 'sauzen' },
+  { re: /ketchup|mosterd|mustard/, place: 'kast', track: 'niveau', days: 365, open: 90, freeze: false, openPlace: 'koelkast', group: 'sauzen' },
+  { re: /mayonaise|mayonnaise|fritessaus|sauces-for-fries|satesaus|peanut-sauce/, place: 'kast', track: 'niveau', days: 270, open: 30, freeze: false, openPlace: 'koelkast', group: 'sauzen' },
+  { re: /tomatenpuree|tomato-paste/, place: 'kast', days: 540, open: 5, freeze: true, openPlace: 'koelkast', group: 'conserven' },
+  { re: /passata|pastasaus|pasta-sauce|\bsaus\b|sauce|currypasta|curry-paste/, place: 'kast', track: 'niveau', days: 365, open: 5, freeze: true, openPlace: 'koelkast', group: 'sauzen' },
+  { re: /bonen|beans|kikkererwt|chickpea|linzen|lentil|\bmais\b|\bcorn\b|canned|conserven|tomatenblokjes|chopped-tomato|tonijn|tuna/, place: 'kast', track: 'aantal', unit: 'blikken', days: 730, open: 3, freeze: false, openPlace: 'koelkast', group: 'conserven' },
+  { re: /\bjam\b|jams|confiture|marmelade/, place: 'kast', track: 'niveau', days: 540, open: 60, freeze: false, openPlace: 'koelkast', group: 'brood' },
+  { re: /honing|honey|stroop/, place: 'kast', track: 'niveau', days: 730, open: 365, freeze: false, group: 'brood' },
+  { re: /pindakaas|peanut-butter|hazelnut-spread|chocopasta|nutella|speculoospasta|speculaaspasta/, place: 'kast', track: 'niveau', days: 270, open: 90, freeze: false, group: 'brood' },
+  { re: /hagelslag|sprinkles|vlokken|muisjes/, place: 'kast', track: 'niveau', days: 365, open: 180, freeze: false, group: 'brood' },
+  { re: /muesli|granola|cereal|ontbijtgranen|havermout|oat-flakes|cornflakes/, place: 'kast', track: 'niveau', days: 270, open: 60, freeze: false, group: 'brood' },
+  { re: /brood|bread|bolletjes|wraps|tortilla|\bpita\b|croissant|baguette/, place: 'kast', days: 4, open: null, freeze: true, group: 'brood' },
+  { re: /chips|crisps|popcorn|nootjes|pinda's|pindas|\bnuts\b|noten/, place: 'kast', days: 120, open: 14, freeze: false, group: 'snacks' },
+  { re: /koek|biscuit|cookie|crackers|beschuit|rusk|chocola|chocolate|snoep|candy|candies/, place: 'kast', days: 180, open: 21, freeze: false, group: 'snacks' },
+  { re: /koffie|coffee/, place: 'kast', track: 'niveau', days: 365, open: 30, freeze: false, group: 'koffie' },
+  { re: /thee\b|\btea\b|teas|rooibos|infusion|herbal/, place: 'kast', unit: 'zakjes', days: 730, open: 365, freeze: false, group: 'koffie' },
+  { re: /\bolie\b|\boil\b|oils|azijn|vinegar/, place: 'kast', track: 'niveau', days: 540, open: 180, freeze: false, group: 'voorraad' },
+  { re: /rijst|\brice\b|pasta|spaghetti|penne|macaroni|fusilli|noodle|\bmie\b|couscous|bulgur|quinoa|\bmeel\b|flour|suiker|sugar|\bbloem\b/, place: 'kast', track: 'gram', days: 540, open: 180, freeze: false, group: 'voorraad' },
+  { re: /kaneel|cinnamon|paprikapoeder|komijn|cumin|kurkuma|turmeric|oregano|nootmuskaat|nutmeg|kerrie|curry-powder|chilipoeder|knoflookpoeder|gemberpoeder|\btijm\b|rozemarijn|laurier|basilicum|kruiden|herbs|spices|specerijen|\bzout\b|sea-salts|\bpeper\b|peppercorns/, place: 'kast', track: 'niveau', days: 730, open: 365, freeze: false, group: 'kruiden' },
+  { re: /banaan|banana|aardappel|potato|\bui\b|\buien\b|onion|knoflook|garlic/, place: 'kast', days: 14, open: 3, freeze: false, group: 'groente' },
+  { re: /appel|apple|\bpeer\b|pear|sinaasappel|orange|citroen|lemon|druif|grape|aardbei|strawberr|fruit|bessen|berries/, place: 'koelkast', days: 7, open: 2, freeze: true, group: 'groente' },
+  { re: /\bsla\b|salad|spinazie|spinach|tomaat|tomato|komkommer|cucumber|paprika|courgette|broccoli|bloemkool|wortel|carrot|groente|vegetable|champignon|mushroom/, place: 'koelkast', days: 7, open: 3, freeze: true, group: 'groente' }
 ];
 const findRule = (text) => RULES.find((r) => r.re.test(String(text || '').toLowerCase())) || null;
+const ruleFor = (p) => findRule(`${p.name || ''} ${p.categories || ''}`);
+const groupOf = (p) => (p.place === 'vriezer' ? 'diepvries' : null) || ((ruleFor(p) || {}).group) || 'overig';
 function guessOpenDays(text) { const r = findRule(text); return r ? r.open : null; }
 
-// Leest bijvoorbeeld "4 x 150 g" of "10 stuks" uit de inhoud
-function parseQuantity(prod) {
+// Haalt merk en inhoud uit een productnaam: "Jumbo Kaneel 29 g" -> "Kaneel"
+function cleanName(name) {
+  let n = String(name || '').trim();
+  n = n.replace(/^(albert heijn|ah|jumbo|plus|lidl|aldi|dirk|g'woon)(\s+(basic|terra|biologisch|excellent|huismerk))?\s+(?=\S{2,})/i, '');
+  n = n.replace(/\s+\d+\s*(stuks|stuk|st|zakjes|staafjes|sticks|capsules|cups|pads|tabletten)\b/ig, '');
+  n = n.replace(/\s+\d+(?:[.,]\d+)?\s*(x\s*\d+(?:[.,]\d+)?\s*)?(kg|g|gr|gram|ml|cl|l|liter)\b\.?$/i, '');
+  n = n.replace(/\s{2,}/g, ' ').trim();
+  if (!n) n = String(name || '').trim();
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
+
+// Leest bijvoorbeeld "4 x 150 g", "10 stuks" of "50 Stuks" (ook uit de naam)
+function parseQuantity(prod, name) {
   const q = String(prod.quantity || '').toLowerCase().replace(',', '.');
+  const nm = String(name || '').toLowerCase().replace(',', '.');
   let total = Number(prod.product_quantity) > 0 ? Math.round(Number(prod.product_quantity)) : null;
   if (!total) {
-    const t = q.match(/(\d+(?:\.\d+)?)\s*(kg|g|gr|gram|ml|cl|l|liter)\b/);
+    const t = q.match(/(\d+(?:\.\d+)?)\s*(kg|g|gr|gram|ml|cl|l|liter)\b/) || nm.match(/(\d+(?:\.\d+)?)\s*(kg|g|gr|gram|ml|cl|l|liter)\b/);
     if (t) total = Math.round(Number(t[1]) * ({ kg: 1000, l: 1000, liter: 1000, cl: 10 }[t[2]] || 1));
   }
   const unitTxt = `${prod.product_quantity_unit || ''} ${q}`;
   const liquid = /\bml\b|\bcl\b|\bl\b|liter|litre/.test(unitTxt);
-  let count = null, per = null;
+  let count = null, per = null, countUnit = null;
   let m = q.match(/(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(g|gr|gram|ml|cl|l)\b/);
   if (m) { count = Number(m[1]); per = Number(m[2]) * (m[3] === 'cl' ? 10 : m[3] === 'l' ? 1000 : 1); }
-  else if ((m = q.match(/^(\d+)\s*(stuks|st\b|stuk|eieren|eggs|pieces|zakjes|blikjes|blikken)?\s*$/)) || (m = q.match(/(\d+)\s*(stuks|stuk|eieren|eggs|pieces|zakjes)/))) { count = Number(m[1]); }
-  return { total, liquid, count, per: per ? Math.round(per) : null };
+  else {
+    const both = `${q} ${nm}`;
+    m = both.match(/(\d+)\s*(stuks|stuk|st\b|eieren|eggs|pieces|zakjes|zakje|staafjes|sticks|capsules|cups|pads|tabletten|blikjes|blikken)/) || q.match(/^(\d+)\s*$/);
+    if (m) { count = Number(m[1]); countUnit = m[2] || null; }
+  }
+  const unitMap = { zakjes: 'zakjes', zakje: 'zakjes', staafjes: 'staafjes', sticks: 'staafjes', capsules: 'capsules', cups: 'cups', pads: 'pads', tabletten: 'tabletten', blikjes: 'blikjes', blikken: 'blikken' };
+  return { total, liquid, count: count && count > 0 ? count : null, per: per ? Math.round(per) : null, countUnit: unitMap[countUnit] || null };
 }
 
 function applyRules(p, text, qty) {
@@ -876,28 +1019,31 @@ function applyRules(p, text, qty) {
   p.open_shelf_days = r.open !== undefined ? r.open : (p.place === 'koelkast' ? 4 : null);
   const total = qty.total;
   if (total) { p.full_grams = total; p.grams = total; p.grams_per_unit = qty.per || total; }
-  p.track = r.track || (qty.liquid ? 'niveau' : qty.count ? 'aantal' : 'aantal');
+  p.track = r.track || (qty.liquid ? 'niveau' : 'aantal');
+  if (qty.count && qty.count > 1 && p.track !== 'aantal' && !qty.liquid) p.track = 'aantal';
   p.level = 'Vol';
+  p.count = 1;
   if (p.track === 'aantal') {
     if (r.unit === 'plakken') {
       p.unit = 'plakken'; p.grams_per_unit = r.gpu;
       p.count = total ? Math.max(1, Math.round(total / r.gpu)) : 10;
     } else if (qty.count) {
       p.count = qty.count;
-      p.unit = r.unit || 'stuks';
+      p.unit = qty.countUnit || r.unit || 'stuks';
       if (qty.per) p.grams_per_unit = qty.per; else if (total) p.grams_per_unit = Math.max(1, Math.round(total / qty.count)); else if (r.gpu) p.grams_per_unit = r.gpu;
     } else {
-      p.count = 1; p.unit = r.unit || 'stuks';
+      p.unit = r.unit === 'zakjes' ? 'stuks' : (r.unit || 'stuks');
       if (r.gpu && !total) p.grams_per_unit = r.gpu;
     }
   } else if (p.track === 'gram') {
     p.grams = total || 500;
   } else {
-    p.unit = 'pakken';
+    p.unit = /\bml\b|\bcl\b|\bl\b|liter/.test(String(qty.raw || '')) || r.group === 'dranken' ? 'flessen' : 'pakken';
   }
   p._ruleDays = r.days || null;
   p.expires_on = r.days ? addDays(today(), r.days) : null;
   p.expEstimated = !!r.days;
+  p.expires_precision = 'day';
   return r;
 }
 
@@ -926,7 +1072,7 @@ async function rememberProduct(p, row, isNew) {
 }
 
 async function lookupOpenFoodFacts(code) {
-  const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_nl,generic_name_nl,brands,quantity,product_quantity,product_quantity_unit,categories,categories_tags,nutriscore_grade,nova_group,ingredients_text,ingredients_text_nl,allergens_tags,image_front_small_url,nutriments`;
+  const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_nl,generic_name_nl,lang,brands,quantity,product_quantity,product_quantity_unit,categories,categories_tags,nutriscore_grade,nova_group,ingredients_text,ingredients_text_nl,allergens_tags,image_front_small_url,nutriments`;
   const res = await fetch(url);
   if (!res.ok) return null;
   const j = await res.json();
@@ -946,11 +1092,11 @@ async function buildFromCode(code) {
     if (ahp && ahp.title) prod.product_name = ahp.title;
   }
   if (prod) {
-    p.name = (prod.product_name_nl || prod.product_name || '').trim().slice(0, 100);
+    const rawName = (prod.product_name_nl || prod.product_name || '').trim();
     Object.assign(p, offToInfo(prod));
-    if (!p.name && p.brand) p.name = p.brand;
-    const text = `${p.name} ${prod.generic_name_nl || ''} ${prod.categories || ''} ${(prod.categories_tags || []).join(' ')}`;
-    applyRules(p, text, parseQuantity(prod));
+    p.name = cleanName(rawName || p.brand || '', p.brand).slice(0, 100);
+    const text = `${rawName} ${prod.generic_name_nl || ''} ${prod.categories || ''} ${(prod.categories_tags || []).join(' ')}`;
+    applyRules(p, text, parseQuantity(prod, rawName));
     if (!p.nutrition) await autoNevo(p);
     const ahQuick = await Promise.race([ahPromise, new Promise((r) => setTimeout(() => r(null), 1500))]);
     if (ahQuick && /^https:\/\//.test(ahQuick.image || '')) p.image_url = ahQuick.image;
@@ -958,13 +1104,13 @@ async function buildFromCode(code) {
   }
   const ah = await ahPromise;
   if (ah && ah.title) {
-    p.name = ah.title.slice(0, 100);
     p.brand = ah.brand || null;
+    p.name = cleanName(ah.title, ah.brand).slice(0, 100);
     p.quantity_text = ah.unitSize || null;
     p.image_url = /^https:\/\//.test(ah.image || '') ? ah.image : null;
     p.nutriscore = /^[a-e]$/i.test(ah.nutriscore || '') ? ah.nutriscore.toLowerCase() : null;
     p.categories = ah.category || null;
-    applyRules(p, `${ah.title} ${ah.category || ''}`, parseQuantity({ quantity: ah.unitSize || '' }));
+    applyRules(p, `${ah.title} ${ah.category || ''}`, parseQuantity({ quantity: ah.unitSize || '' }, ah.title));
     await autoNevo(p);
     return { p, source: 'ah' };
   }
@@ -972,12 +1118,39 @@ async function buildFromCode(code) {
 }
 
 let lastCode = '', lastTime = 0;
+// Eén verpakking erbij: aantal, gram of een extra pak
+function addPack(p) {
+  const mem = state.memory[p.barcode] || {};
+  if (p.track === 'gram') return { grams: (p.grams || 0) + (mem.grams || p.full_grams || 0) };
+  if (p.track === 'aantal') {
+    const pack = mem.count || (p.unit !== 'stuks' && p.grams_per_unit ? Math.max(1, Math.round(p.full_grams / p.grams_per_unit)) : 1);
+    return { count: (p.count || 0) + pack };
+  }
+  return stockG(p) <= 0 ? { level: 'Vol', count: 1 } : { count: (p.count || 1) + 1 };
+}
 async function onDetected(raw) {
   const code = String(raw || '').replace(/\D/g, '');
   if (code.length < 6) { setStatus('Dat lijkt geen geldige barcode. Probeer het nog eens.'); return true; }
   if (state.handling) return true;
   if (state.batch && code === lastCode && Date.now() - lastTime < 5000) return true;
   lastCode = code; lastTime = Date.now();
+  const existing = state.products.find((x) => x.barcode === code);
+  if (existing) {
+    const before = { count: existing.count, grams: existing.grams, level: existing.level };
+    const changes = addPack(existing);
+    await patchProduct(existing.id, changes, true);
+    const now = state.products.find((x) => x.id === existing.id) || { ...existing, ...changes };
+    toast(`${existing.name}: nu ${amountText(now)}`, 'Ongedaan maken', () => patchProduct(existing.id, before));
+    if (state.batch) {
+      state.recent.push(`${existing.name} · +1`);
+      const rec = document.getElementById('recent'); if (rec) rec.innerHTML = recentHtml();
+      setStatus('Aantal verhoogd. Scan het volgende product.');
+      return true;
+    }
+    await stopScan();
+    state.tab = existing.place; state.screen = 'voorraad'; render();
+    return false;
+  }
   state.handling = true;
   if (!state.batch) await stopScan();
   setStatus(`Barcode ${code} gelezen, product opzoeken…`);
@@ -1041,7 +1214,9 @@ function toRow(p) {
     expires_on: p.expires_on || null, opened_on: p.opened_on || null,
     open_shelf_days: p.open_shelf_days ? Math.max(1, Math.round(p.open_shelf_days)) : null,
     freezable: !!p.freezable,
-    barcode: p.barcode || null
+    barcode: p.barcode || null,
+    expires_estimated: !!(p.expEstimated ?? p.expires_estimated) && !!p.expires_on,
+    expires_precision: p.expires_precision === 'month' ? 'month' : 'day'
   };
   INFO_FIELDS.forEach((f) => { row[f] = p[f] ?? null; });
   return row;
@@ -1085,9 +1260,12 @@ document.addEventListener('click', async (e) => {
       else patchProduct(id, { count: Math.max(0, p.count + dir) });
       break;
     }
-    case 'level': patchProduct(id, { level: v }); break;
+    case 'level':
+      if (v === 'Leeg' && (p.count || 1) > 1) { patchProduct(id, { level: 'Vol', count: p.count - 1 }); toast(`${p.name}: volgende aangebroken`); }
+      else patchProduct(id, { level: v });
+      break;
     case 'open':
-      openForm({ ...p }, '', false); break;
+      openForm({ ...p, expEstimated: p.expires_estimated }, '', false); break;
     case 'new':
       openForm(blankProduct(), '', false); break;
     case 'back': state.screen = 'voorraad'; state.edit = null; state.info = ''; state.returnToScan = false; render(); break;
@@ -1126,6 +1304,12 @@ document.addEventListener('click', async (e) => {
       const r = findRule(`${ed.name} ${ed.categories || ''}`);
       if (r && r.openPlace && ed.place !== r.openPlace) { ed.place = r.openPlace; state.note = 'Na openen bewaar je dit in de koelkast (advies Voedingscentrum). Ik heb het verplaatst.'; }
       render(); break;
+    }
+    case 'exp-precision': {
+      const ed = state.edit;
+      if (ed.expires_precision === 'month') ed.expires_precision = 'day';
+      else { ed.expires_precision = 'month'; if (ed.expires_on) ed.expires_on = lastDayOfMonth(ed.expires_on.slice(0, 7)); }
+      ed.expEstimated = false; render(); break;
     }
     case 'f-open-other': state.showOpenDate = true; render(); { const d = document.getElementById('f-opened'); if (d) d.focus(); } break;
     case 'confirm-add': {
@@ -1175,6 +1359,11 @@ document.addEventListener('input', (e) => {
   const t = e.target;
   if (t.type === 'checkbox') state.edit[f] = t.checked;
   else if (t.type === 'number') state.edit[f] = t.value === '' ? null : Number(t.value);
+  else if (f === 'exp_month') {
+    state.edit.expires_on = t.value ? lastDayOfMonth(t.value) : null;
+    state.edit.expires_precision = 'month'; state.edit.expEstimated = false; state.edit.expTouched = true;
+    render(); return;
+  }
   else if (t.type === 'date') {
     state.edit[f] = t.value || null;
     if (f === 'expires_on') { state.edit.expEstimated = false; state.edit.expTouched = true; }
