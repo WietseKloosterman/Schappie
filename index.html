@@ -40,8 +40,10 @@
   .chip { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--text-2); }
   .chip.warn { background: var(--warn-bg); color: var(--warn); }
   .chip.op { background: var(--op-bg); color: var(--op); }
-  .item { display: flex; align-items: center; gap: 8px; padding: 8px 12px 8px 16px; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 12px; }
   .item + .item { border-top: 1px solid var(--line-soft); }
+  .thumb { width: 44px; height: 44px; border-radius: 10px; background: #FFFFFF; border: 1px solid var(--line-soft); object-fit: contain; flex-shrink: 0; }
+  .thumb.ph { display: flex; align-items: center; justify-content: center; background: var(--chip); color: var(--muted); font-size: 16px; font-weight: 600; border: 0; }
   .item-main { flex: 1; min-width: 0; min-height: 48px; text-align: left; background: none; border: 0; padding: 0; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
   .item-name { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .step { display: flex; align-items: center; gap: 2px; }
@@ -115,7 +117,7 @@ const SUPABASE_URL = 'https://rvucshogutdqwjfngarc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_g6dwmq_7hs8li_S_ICSwXQ_Qe400crT';
 // ==================================================================================
 
-const APP_VERSION = '7';
+const APP_VERSION = '8';
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const PLACES = [['koelkast', 'Koelkast'], ['vriezer', 'Vriezer'], ['kast', 'Kast']];
@@ -239,15 +241,30 @@ async function loadProducts() {
   if (error) { toast('Laden mislukt: ' + error.message); return; }
   state.products = data;
   if (state.screen === 'voorraad') render();
+  setTimeout(backfillImages, 1500);
   try {
     const mem = await db.from('product_memory').select('barcode, data');
     if (!mem.error && mem.data) state.memory = { ...state.memory, ...Object.fromEntries(mem.data.map((m) => [m.barcode, m.data])) };
   } catch (e) { /* geheugen is optioneel */ }
 }
-async function patchProduct(id, changes) {
+let backfillDone = false;
+async function backfillImages() {
+  if (backfillDone) return;
+  backfillDone = true;
+  const todo = state.products.filter((p) => p.barcode && !p.image_url).slice(0, 15);
+  for (const p of todo) {
+    const ah = await ahLookup({ gtin: p.barcode });
+    let img = ah && /^https:\/\//.test(ah.image || '') ? ah.image : null;
+    if (!img) {
+      try { const off = await lookupOpenFoodFacts(p.barcode); if (off && /^https:\/\//.test(off.image_front_small_url || '')) img = off.image_front_small_url; } catch (e) { /* volgende */ }
+    }
+    if (img) await patchProduct(p.id, { image_url: img }, true);
+  }
+}
+async function patchProduct(id, changes, quiet) {
   const before = state.products.find((p) => p.id === id);
   state.products = state.products.map((p) => (p.id === id ? { ...p, ...changes } : p));
-  render();
+  if (!quiet || state.screen === 'voorraad') render();
   const { error } = await db.from('products').update(changes).eq('id', id);
   if (error) {
     toast('Opslaan mislukt, probeer het opnieuw');
@@ -289,7 +306,11 @@ function viewVoorraad() {
     const control = p.track === 'niveau'
       ? `<div class="lvl">${LEVELS.map((L) => `<button data-action="level" data-id="${p.id}" data-value="${L}" aria-pressed="${p.level === L}">${L}</button>`).join('')}</div>`
       : `<div class="step"><button data-action="dec" data-id="${p.id}" aria-label="Minder ${esc(p.name)}">−</button><span class="amt">${esc(amountText(p))}</span><button data-action="inc" data-id="${p.id}" aria-label="Meer ${esc(p.name)}">+</button></div>`;
+    const thumb = p.image_url
+      ? `<img class="thumb" src="${esc(p.image_url)}" alt="" loading="lazy" width="44" height="44">`
+      : `<span class="thumb ph" aria-hidden="true">${esc((p.name || '?').trim().charAt(0).toUpperCase())}</span>`;
     return `<div class="item">
+      ${thumb}
       <button class="item-main" data-action="open" data-id="${p.id}">
         <span class="item-name">${esc(p.name)}</span>
         <span class="row" style="gap:6px"><span class="chip ${c.cls}">${esc(c.text)}</span>${p.nutriscore ? `<span class="ns ns-${p.nutriscore}" aria-label="Nutri-Score ${p.nutriscore.toUpperCase()}">${p.nutriscore.toUpperCase()}</span>` : ''}${p.opened_on ? '<span class="muted" style="font-size:12px">Geopend</span>' : ''}</span>
@@ -477,7 +498,7 @@ function loadPrices() {
       CJB = [];
       for (const store of data) for (const it of (store.d || [])) {
         if (typeof it.p !== 'number' || !it.n) continue;
-        CJB.push({ store: store.n, naam: it.n, n: norm(it.n), p: it.p, s: it.s || '', l: it.l || '' });
+        CJB.push({ store: store.n, naam: it.n, n: it.n.toLowerCase(), p: it.p, s: it.s || '', l: it.l || '' });
       }
       return CJB;
     })();
@@ -520,6 +541,10 @@ async function fillPrices(p) {
   const parts = [];
   if (p.barcode) {
     const ah = await ahLookup({ gtin: p.barcode });
+    if (ah && /^https:\/\//.test(ah.image || '') && (!p.image_url || !/static\.ah\.nl/.test(p.image_url))) {
+      p.image_url = ah.image;
+      if (p.id) patchProduct(p.id, { image_url: ah.image }, true);
+    }
     if (ah && ah.price != null) {
       parts.push(`<div class="between"><span><strong style="font-weight:600">Albert Heijn nu</strong>${ah.unitSize ? ` · ${esc(ah.unitSize)}` : ''}</span><span style="font-weight:600">${euro(ah.price)}</span></div>`
         + (ah.bonus ? `<span class="chip warn" style="align-self:flex-start">Bonus: ${esc(ah.bonusText || 'in de aanbieding')}${ah.priceBeforeBonus && ah.priceBeforeBonus !== ah.price ? ` (was ${euro(ah.priceBeforeBonus)})` : ''}</span>` : ''));
@@ -927,6 +952,8 @@ async function buildFromCode(code) {
     const text = `${p.name} ${prod.generic_name_nl || ''} ${prod.categories || ''} ${(prod.categories_tags || []).join(' ')}`;
     applyRules(p, text, parseQuantity(prod));
     if (!p.nutrition) await autoNevo(p);
+    const ahQuick = await Promise.race([ahPromise, new Promise((r) => setTimeout(() => r(null), 1500))]);
+    if (ahQuick && /^https:\/\//.test(ahQuick.image || '')) p.image_url = ahQuick.image;
     return { p, source: 'off' };
   }
   const ah = await ahPromise;
@@ -953,7 +980,7 @@ async function onDetected(raw) {
   lastCode = code; lastTime = Date.now();
   state.handling = true;
   if (!state.batch) await stopScan();
-  setStatus('Product opzoeken…');
+  setStatus(`Barcode ${code} gelezen, product opzoeken…`);
   const r = await buildFromCode(code);
   state.handling = false;
 

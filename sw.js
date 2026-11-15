@@ -1,6 +1,6 @@
 // Service worker: bewaart de app zelf, zodat hij snel opstart.
 // Je voorraad komt altijd vers uit Supabase.
-const CACHE = 'schappie-v7';
+const CACHE = 'schappie-v8';
 const SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './icon-180.png', './nevo.json'];
 
 self.addEventListener('install', (e) => {
