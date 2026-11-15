@@ -80,7 +80,11 @@
   #reader .frame { position: absolute; left: 8%; right: 8%; top: 30%; bottom: 30%; border: 2px solid #FFFFFF; border-radius: 12px; }
   #reader .line { position: absolute; left: 10%; right: 10%; top: 50%; height: 2px; background: #6FCF86; }
   .fab { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 20px); width: calc(100% - 40px); max-width: 520px; box-shadow: 0 0 0 4px var(--bg); }
-  .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 86px); width: calc(100% - 40px); max-width: 520px; background: var(--text); color: #FFFFFF; border-radius: 12px; padding: 14px 16px; font-size: 14px; font-weight: 500; z-index: 10; }
+  .toast[hidden] { display: none !important; }
+  .toast button { background: none; border: 0; color: #9FE1B0; font-weight: 600; font-size: 14px; min-height: 40px; padding: 0 4px; white-space: nowrap; }
+  details.adv > summary { cursor: pointer; font-size: 15px; font-weight: 600; color: var(--green); min-height: 44px; display: flex; align-items: center; }
+  .recent { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+  .toast { display: flex; justify-content: space-between; align-items: center; gap: 12px; position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 86px); width: calc(100% - 40px); max-width: 520px; background: var(--text); color: #FFFFFF; border-radius: 12px; padding: 14px 16px; font-size: 14px; font-weight: 500; z-index: 10; }
   .center { min-height: 100vh; justify-content: center; }
   .empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 14px; }
   .small-btn { min-height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--input); background: #FFFFFF; font-size: 13px; font-weight: 500; white-space: nowrap; }
@@ -111,7 +115,7 @@ const SUPABASE_URL = 'https://rvucshogutdqwjfngarc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_g6dwmq_7hs8li_S_ICSwXQ_Qe400crT';
 // ==================================================================================
 
-const APP_VERSION = '4';
+const APP_VERSION = '5';
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const PLACES = [['koelkast', 'Koelkast'], ['vriezer', 'Vriezer'], ['kast', 'Kast']];
@@ -120,7 +124,13 @@ const LEVELS = ['Vol', 'Half', 'Leeg'];
 const FRAC = { Vol: 1, Half: 0.5, Leeg: 0 };
 
 const state = {
-  screen: 'loading',   // loading | login | voorraad | form | scan
+  screen: 'loading',   // loading | login | voorraad | form | scan | confirm
+  memory: {},
+  batch: (() => { try { return localStorage.getItem('schappie-batch') === '1'; } catch (e) { return false; } })(),
+  recent: [],
+  returnToScan: false,
+  showOpenDate: false,
+  advOpen: false,
   info: '',
   handling: false,
   user: null,
@@ -209,20 +219,29 @@ function movePlace(p, place) {
 }
 
 let toastTimer;
-function toast(msg) {
+let toastFn = null;
+function toast(msg, actionLabel, actionFn) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
+  t.innerHTML = `<span>${esc(msg)}</span>${actionLabel ? `<button type="button" id="toast-action">${esc(actionLabel)}</button>` : ''}`;
+  toastFn = actionFn || null;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+  toastTimer = setTimeout(() => { t.hidden = true; toastFn = null; }, actionLabel ? 5000 : 2600);
 }
+document.getElementById('toast').addEventListener('click', (e) => {
+  if (e.target.id === 'toast-action' && toastFn) { const fn = toastFn; toastFn = null; document.getElementById('toast').hidden = true; fn(); }
+});
 
 // ---------- data ----------
 async function loadProducts() {
   const { data, error } = await db.from('products').select('*').order('name');
   if (error) { toast('Laden mislukt: ' + error.message); return; }
   state.products = data;
-  render();
+  if (state.screen === 'voorraad') render();
+  try {
+    const mem = await db.from('product_memory').select('barcode, data');
+    if (!mem.error && mem.data) state.memory = { ...state.memory, ...Object.fromEntries(mem.data.map((m) => [m.barcode, m.data])) };
+  } catch (e) { /* geheugen is optioneel */ }
 }
 async function patchProduct(id, changes) {
   const before = state.products.find((p) => p.id === id);
@@ -322,21 +341,30 @@ function viewForm() {
       <div class="field"><span class="label">Waar ligt het?</span><div class="seg" role="group" aria-label="Plek">${places}</div>
         ${state.note ? `<p class="note">${esc(state.note)}</p>` : ''}</div>
 
-      <div class="field"><span class="label">Hoe houd je het bij?</span><div class="seg" role="group" aria-label="Bijhouden in">${tracks}</div></div>
       ${amount}
 
-      <div class="field"><label for="f-exp">Houdbaar tot</label><input class="input" id="f-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}"></div>
+      <div class="field"><label for="f-exp">Houdbaar tot ${p.expEstimated ? '<span class="muted" style="font-weight:400">(geschat)</span>' : ''}</label><input class="input" id="f-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}"></div>
 
-      <div class="field"><span class="label">Opengemaakt op</span>
-        <div class="row"><input class="input" id="f-opened" aria-label="Datum waarop je het opende" data-field="opened_on" type="date" max="${today()}" value="${p.opened_on || ''}" style="flex:1"><button type="button" class="small-btn" style="height:48px" data-action="f-unopen" aria-pressed="${!p.opened_on}">Niet geopend</button></div>
+      <div class="field"><span class="label">Geopend?</span>
+        <div class="row" style="flex-wrap:wrap">
+          <button type="button" class="small-btn" data-action="f-unopen" aria-pressed="${!p.opened_on}">Niet geopend</button>
+          <button type="button" class="small-btn" data-action="f-open-today" aria-pressed="${p.opened_on === today()}">Vandaag geopend</button>
+          <button type="button" class="small-btn" data-action="f-open-other" aria-pressed="${!!p.opened_on && p.opened_on !== today()}">Andere datum</button>
+        </div>
+        ${state.showOpenDate || (p.opened_on && p.opened_on !== today()) ? `<input class="input" id="f-opened" aria-label="Datum waarop je het opende" data-field="opened_on" type="date" max="${today()}" value="${p.opened_on || ''}">` : ''}
         ${effLine}</div>
 
-      <div class="grid2">
-        <div class="field"><label for="f-shelf">Na openen goed (dagen)</label><input class="input" id="f-shelf" data-field="open_shelf_days" type="number" inputmode="numeric" min="1" value="${p.open_shelf_days ?? ''}" placeholder="bijv. 4"></div>
-        <div class="field"><label for="f-gpu">Gewicht per stuk (g)</label><input class="input" id="f-gpu" data-field="grams_per_unit" type="number" inputmode="numeric" min="1" value="${p.grams_per_unit}"></div>
-      </div>
-
-      <label class="check"><input type="checkbox" data-field="freezable" ${p.freezable ? 'checked' : ''}> Kan in de vriezer</label>
+      <details class="adv" id="adv" ${state.advOpen ? 'open' : ''}>
+        <summary>Meer instellingen</summary>
+        <div style="display:flex;flex-direction:column;gap:20px;padding-top:8px">
+          <div class="field"><span class="label">Hoe houd je het bij?</span><div class="seg" role="group" aria-label="Bijhouden in">${tracks}</div></div>
+          <div class="grid2">
+            <div class="field"><label for="f-shelf">Na openen goed (dagen)</label><input class="input" id="f-shelf" data-field="open_shelf_days" type="number" inputmode="numeric" min="1" value="${p.open_shelf_days ?? ''}" placeholder="bijv. 4"></div>
+            <div class="field"><label for="f-gpu">Gewicht per stuk (g)</label><input class="input" id="f-gpu" data-field="grams_per_unit" type="number" inputmode="numeric" min="1" value="${p.grams_per_unit}"></div>
+          </div>
+          <label class="check"><input type="checkbox" data-field="freezable" ${p.freezable ? 'checked' : ''}> Kan in de vriezer</label>
+        </div>
+      </details>
 
       ${state.error ? `<p class="error" role="alert">${esc(state.error)}</p>` : ''}
       <button class="btn" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Opslaan…' : isNew ? 'Toevoegen' : 'Opslaan'}</button>
@@ -404,11 +432,47 @@ function viewScan() {
     <h1>Barcode scannen</h1>
     <div id="reader"><video id="scan-video" playsinline muted></video><div class="frame" aria-hidden="true"></div><div class="line" aria-hidden="true"></div></div>
     <p class="muted" id="scan-status" role="status" style="font-size:14px">Camera starten…</p>
-    <p class="muted" style="font-size:11px">Versie ${APP_VERSION}</p>
+    <label class="check card" style="padding:4px 14px"><input type="checkbox" data-action="batch-toggle" ${state.batch ? 'checked' : ''}><span><strong style="font-weight:600">Uitpak-modus</strong><br><span class="muted">Alles meteen toevoegen, camera blijft aan</span></span></label>
+    <div class="recent" id="recent">${recentHtml()}</div>
     <form data-form="code" class="row" novalidate>
       <input class="input" id="code" inputmode="numeric" autocomplete="off" placeholder="Of typ de barcode in" aria-label="Barcode" style="flex:1">
       <button class="small-btn" style="height:48px" type="submit">Zoeken</button>
     </form>
+    <p class="muted" style="font-size:11px">Versie ${APP_VERSION}</p>
+  </main>`;
+}
+
+function recentHtml() {
+  if (!state.recent.length) return '';
+  return '<span class="label">Net toegevoegd</span>' + state.recent.slice(-5).reverse().map((r) => `<span>${esc(r)}</span>`).join('');
+}
+
+function viewConfirm() {
+  const p = state.edit;
+  const places = PLACES.map(([id, label]) => `<button type="button" data-action="f-place" data-value="${id}" aria-pressed="${p.place === id}">${label}</button>`).join('');
+  const meta = [p.brand, p.quantity_text].filter(Boolean).map(esc).join(' · ');
+  return `<main class="wrap">
+    <button class="link" data-action="confirm-cancel"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Annuleren</button>
+    <h1>Klopt dit?</h1>
+    ${state.info ? `<p class="note">${esc(state.info)}</p>` : ''}
+    <section class="card pad" style="display:flex;flex-direction:column;gap:18px">
+      <div class="row" style="gap:12px;align-items:flex-start">
+        ${p.image_url ? `<img src="${esc(p.image_url)}" alt="" width="64" height="64" style="object-fit:contain;border-radius:8px;background:#FFFFFF;flex-shrink:0">` : ''}
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+          <h2 style="font-size:18px">${esc(p.name)}</h2>
+          ${meta ? `<span class="muted">${meta}</span>` : ''}
+          ${p.nutriscore ? `<span><span class="ns ns-${p.nutriscore}" style="font-size:12px;padding:3px 8px">Nutri-Score ${p.nutriscore.toUpperCase()}</span></span>` : ''}
+        </div>
+      </div>
+      <div class="field"><span class="label">Waar leg je het neer?</span><div class="seg" role="group" aria-label="Plek">${places}</div>
+        ${state.note ? `<p class="note">${esc(state.note)}</p>` : ''}</div>
+      <div class="field"><label for="c-exp">Houdbaar tot ${p.expEstimated ? '<span class="muted" style="font-weight:400">(geschat, tik om aan te passen)</span>' : ''}</label><input class="input" id="c-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}"></div>
+      <div class="between"><span class="label">Hoeveelheid</span><span style="font-size:15px;font-weight:500">${esc(amountText(p))}</span></div>
+      ${p.open_shelf_days ? `<div class="between"><span class="label">Na openen goed</span><span style="font-size:15px">${p.open_shelf_days} ${p.open_shelf_days === 1 ? 'dag' : 'dagen'}</span></div>` : ''}
+    </section>
+    ${state.error ? `<p class="error" role="alert">${esc(state.error)}</p>` : ''}
+    <button class="btn" data-action="confirm-add" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Toevoegen…' : 'Toevoegen'}</button>
+    <button class="btn ghost" data-action="confirm-edit">Aanpassen</button>
   </main>`;
 }
 
@@ -418,6 +482,7 @@ function render() {
   else if (state.screen === 'login') app.innerHTML = viewLogin();
   else if (state.screen === 'form') app.innerHTML = viewForm();
   else if (state.screen === 'scan') app.innerHTML = viewScan();
+  else if (state.screen === 'confirm') app.innerHTML = viewConfirm();
   else app.innerHTML = viewVoorraad();
 }
 
@@ -452,7 +517,7 @@ function getDetector() {
 }
 
 async function startScan() {
-  state.screen = 'scan'; state.handling = false; render(); window.scrollTo(0, 0);
+  state.screen = 'scan'; state.handling = false; state.recent = []; render(); window.scrollTo(0, 0);
   setStatus('Camera starten…');
   try {
     const [detector, stream] = await Promise.all([
@@ -477,7 +542,7 @@ async function startScan() {
         try {
           const codes = await detector.detect(video);
           const hit = codes.find((c) => c.rawValue && /^\d{6,14}$/.test(c.rawValue));
-          if (hit) { if (navigator.vibrate) navigator.vibrate(60); handleCode(hit.rawValue); return; }
+          if (hit) { if (navigator.vibrate) navigator.vibrate(60); const cont = await onDetected(hit.rawValue); if (cont && scanning) setTimeout(tick, 1200); return; }
         } catch (e) { /* volgend beeld proberen */ }
       }
       setTimeout(tick, 120);
@@ -495,42 +560,120 @@ async function stopScan() {
   if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; }
 }
 
-// Schatting: hoeveel dagen goed na openen (aan te passen in het formulier)
-const OPEN_RULES = [
-  [/geraspt|grated|shredded/, 5],
-  [/plakken|sliced|tranches/, 7],
-  [/smeerkaas|roomkaas|cream-cheese|cottage|mozzarella|ricotta|feta|burrata/, 5],
-  [/kaas|cheese/, 14],
-  [/kipfilet|kip\b|chicken|gehakt|minced|vlees|meat|beef|pork|varken|rund|vis\b|fish|zalm|salmon|garnal|shrimp/, 1],
-  [/ham\b|hams|salami|vleeswaren|cold-cut|rookvlees|kipfilet-beleg|leverworst|sausage|worst/, 4],
-  [/yoghurt|yogurt|kwark|skyr|quark/, 4],
-  [/vla\b|pudding|custard/, 3],
-  [/slagroom|kookroom|cream\b|creams|crème/, 4],
-  [/melk|milk|karnemelk|buttermilk|chocomel|oat-drink|haverdrank|soja-?drink|plant-based-milk/, 4],
-  [/sap\b|juice|smoothie/, 5],
-  [/frisdrank|soda|cola|sinas|soft-drink/, 3],
-  [/pesto/, 7],
-  [/hummus|dip\b|dips|salade|salad|spread-for-bread/, 4],
-  [/ketchup|mosterd|mustard/, 90],
-  [/mayonaise|mayonnaise|fritessaus|sauces-for-fries/, 30],
-  [/tomatenpuree|tomato-paste|passata|pastasaus|pasta-sauce|saus|sauce/, 5],
-  [/bonen|beans|kikkererwt|chickpea|mais\b|corn\b|blik|canned|tomatenblokjes|chopped-tomato/, 3],
-  [/jam\b|jams|confiture|marmelade|honing|honey/, 60],
-  [/pindakaas|peanut-butter|hazelnut-spread|chocopasta|hagelslag|sprinkles|nutella/, 90],
-  [/margarine|halvarine|bewust|boter|butter|smeerbaar|spreadable-fats|plant-based-spreads/, 30],
-  [/brood|bread|bolletjes|wraps|tortilla/, 4],
-  [/chips|crisps|nootjes|nuts/, 14],
-  [/koek|biscuit|cookie|crackers|beschuit|rusk/, 14],
-  [/muesli|granola|cereal|ontbijtgranen|havermout|oat-flakes/, 60],
-  [/koffiebonen|coffee-beans|gemalen-koffie|ground-coffee|koffie|coffee/, 30],
-  [/olie|oil|azijn|vinegar/, 180],
-  [/rijst|rice|pasta|spaghetti|penne|macaroni|noodle|meel|flour|suiker|sugar|thee|tea\b|teas/, 180],
-  [/ijs\b|ice-cream|diepvries|frozen/, 30]
+// ---------- slimme regels ----------
+// place = plek, track = bijhouden in, days = houdbaar (ongeopend) vanaf vandaag, open = dagen goed na openen, freeze = kan in vriezer
+const RULES = [
+  { re: /frozen|diepvries|bevroren|surgel|\bijs\b|ice-cream|ijsjes/, place: 'vriezer', days: 180, open: 30, freeze: true },
+  { re: /geraspt|grated|shredded/, place: 'koelkast', days: 28, open: 5, freeze: true },
+  { re: /plakken|sliced|tranches/, place: 'koelkast', track: 'aantal', unit: 'plakken', gpu: 20, days: 21, open: 7, freeze: true },
+  { re: /smeerkaas|roomkaas|cream-cheese|cottage|mozzarella|ricotta|feta|burrata|mascarpone/, place: 'koelkast', days: 14, open: 5, freeze: false },
+  { re: /kaas|cheese/, place: 'koelkast', days: 35, open: 14, freeze: true },
+  { re: /\bham\b|hams|salami|vleeswaren|cold-cut|rookvlees|leverworst|cervelaat|filet-americain|ontbijtspek|bacon|spekreep/, place: 'koelkast', days: 10, open: 4, freeze: true },
+  { re: /kipfilet|kipdij|\bkip\b|chicken|gehakt|minced|biefstuk|steak|vlees|meat|beef|pork|varken|rund|worst|sausage|schnitzel|\bvis\b|fish|zalm|salmon|kabeljauw|garnal|shrimp/, place: 'koelkast', days: 4, open: 1, freeze: true },
+  { re: /eieren|\beggs?\b/, place: 'koelkast', track: 'aantal', unit: 'stuks', gpu: 60, days: 28, open: null, freeze: false },
+  { re: /yoghurt|yogurt|kwark|skyr|quark/, place: 'koelkast', days: 14, open: 4, freeze: false },
+  { re: /\bvla\b|pudding|custard|toetje/, place: 'koelkast', days: 10, open: 3, freeze: false },
+  { re: /slagroom|kookroom|creme-fraiche|crème|zure-room|sour-cream|\bcream\b|creams/, place: 'koelkast', days: 14, open: 4, freeze: false },
+  { re: /houdbare|\buht\b|long-life/, place: 'kast', track: 'niveau', days: 120, open: 4, freeze: false },
+  { re: /melk|milk|chocomel|oat-drink|haverdrank|soja-?drink|plant-based-milk|amandeldrink/, place: 'koelkast', track: 'niveau', days: 8, open: 4, freeze: true },
+  { re: /margarine|halvarine|bewust|boter|butter|smeerbaar|spreadable-fats|plant-based-spreads|becel|blue-band/, place: 'koelkast', days: 60, open: 30, freeze: true },
+  { re: /versgeperst|smoothie|fresh-juice|vers-sap/, place: 'koelkast', track: 'niveau', days: 7, open: 3, freeze: false },
+  { re: /\bsap\b|juice|nectar|siroop|syrup|limonade/, place: 'kast', track: 'niveau', days: 240, open: 7, freeze: false },
+  { re: /frisdrank|soda|\bcola\b|sinas|soft-drink|bruiswater|mineraalwater|\bwater\b|waters/, place: 'kast', track: 'niveau', days: 365, open: 3, freeze: false },
+  { re: /\bbier\b|beer|\bwijn\b|wine/, place: 'kast', days: 365, open: 3, freeze: false },
+  { re: /pesto/, place: 'kast', track: 'niveau', days: 270, open: 7, freeze: true },
+  { re: /hummus|\bdip\b|dips|salade\b|spread-for-bread|tapenade|guacamole/, place: 'koelkast', days: 10, open: 4, freeze: false },
+  { re: /ketchup|mosterd|mustard/, place: 'kast', track: 'niveau', days: 365, open: 90, freeze: false },
+  { re: /mayonaise|mayonnaise|fritessaus|sauces-for-fries|satesaus|peanut-sauce/, place: 'kast', track: 'niveau', days: 270, open: 30, freeze: false },
+  { re: /tomatenpuree|tomato-paste/, place: 'kast', days: 540, open: 5, freeze: true },
+  { re: /passata|pastasaus|pasta-sauce|\bsaus\b|sauce|currypasta|curry-paste/, place: 'kast', track: 'niveau', days: 365, open: 5, freeze: true },
+  { re: /bonen|beans|kikkererwt|chickpea|linzen|lentil|\bmais\b|\bcorn\b|canned|conserven|tomatenblokjes|chopped-tomato|tonijn|tuna/, place: 'kast', track: 'aantal', unit: 'blikken', days: 730, open: 3, freeze: false },
+  { re: /\bjam\b|jams|confiture|marmelade|honing|honey|stroop/, place: 'kast', track: 'niveau', days: 540, open: 90, freeze: false },
+  { re: /pindakaas|peanut-butter|hazelnut-spread|chocopasta|nutella|speculoospasta/, place: 'kast', track: 'niveau', days: 270, open: 90, freeze: false },
+  { re: /hagelslag|sprinkles|vlokken|muisjes/, place: 'kast', track: 'niveau', days: 365, open: 180, freeze: false },
+  { re: /brood|bread|bolletjes|wraps|tortilla|\bpita\b|croissant|baguette/, place: 'kast', days: 4, open: null, freeze: true },
+  { re: /chips|crisps|nootjes|pinda's|pindas|\bnuts\b|noten/, place: 'kast', days: 120, open: 14, freeze: false },
+  { re: /koek|biscuit|cookie|crackers|beschuit|rusk|chocola|chocolate|snoep|candy|candies/, place: 'kast', days: 180, open: 21, freeze: false },
+  { re: /muesli|granola|cereal|ontbijtgranen|havermout|oat-flakes|cornflakes/, place: 'kast', track: 'niveau', days: 270, open: 60, freeze: false },
+  { re: /koffie|coffee/, place: 'kast', track: 'niveau', days: 365, open: 30, freeze: false },
+  { re: /\bthee\b|\btea\b|teas/, place: 'kast', days: 730, open: 365, freeze: false },
+  { re: /\bolie\b|\boil\b|oils|azijn|vinegar/, place: 'kast', track: 'niveau', days: 540, open: 180, freeze: false },
+  { re: /rijst|\brice\b|pasta|spaghetti|penne|macaroni|fusilli|noodle|\bmie\b|couscous|bulgur|quinoa|\bmeel\b|flour|suiker|sugar|\bbloem\b/, place: 'kast', track: 'gram', days: 540, open: 180, freeze: false },
+  { re: /kruiden|herbs|spices|specerijen|bouillon|stock-cubes|\bzout\b|\bpeper\b/, place: 'kast', track: 'niveau', days: 730, open: 365, freeze: false },
+  { re: /banaan|banana|aardappel|potato|\bui\b|\buien\b|onion|knoflook|garlic/, place: 'kast', days: 14, open: 3, freeze: false },
+  { re: /appel|apple|\bpeer\b|pear|sinaasappel|orange|citroen|lemon|druif|grape|aardbei|strawberr|fruit|bessen|berries/, place: 'koelkast', days: 7, open: 2, freeze: true },
+  { re: /\bsla\b|salad|spinazie|spinach|tomaat|tomato|komkommer|cucumber|paprika|courgette|broccoli|bloemkool|wortel|carrot|groente|vegetable|champignon|mushroom/, place: 'koelkast', days: 7, open: 3, freeze: true }
 ];
-function guessOpenDays(text) {
-  const t = String(text || '').toLowerCase();
-  for (const [re, days] of OPEN_RULES) if (re.test(t)) return days;
-  return null;
+const findRule = (text) => RULES.find((r) => r.re.test(String(text || '').toLowerCase())) || null;
+function guessOpenDays(text) { const r = findRule(text); return r ? r.open : null; }
+
+// Leest bijvoorbeeld "4 x 150 g" of "10 stuks" uit de inhoud
+function parseQuantity(prod) {
+  const q = String(prod.quantity || '').toLowerCase().replace(',', '.');
+  const total = Number(prod.product_quantity) > 0 ? Math.round(Number(prod.product_quantity)) : null;
+  const unitTxt = `${prod.product_quantity_unit || ''} ${q}`;
+  const liquid = /\bml\b|\bcl\b|\bl\b|liter|litre/.test(unitTxt);
+  let count = null, per = null;
+  let m = q.match(/(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(g|gr|gram|ml|cl|l)\b/);
+  if (m) { count = Number(m[1]); per = Number(m[2]) * (m[3] === 'cl' ? 10 : m[3] === 'l' ? 1000 : 1); }
+  else if ((m = q.match(/^(\d+)\s*(stuks|st\b|stuk|eieren|eggs|pieces|zakjes|blikjes|blikken)?\s*$/)) || (m = q.match(/(\d+)\s*(stuks|stuk|eieren|eggs|pieces|zakjes)/))) { count = Number(m[1]); }
+  return { total, liquid, count, per: per ? Math.round(per) : null };
+}
+
+function applyRules(p, text, qty) {
+  const r = findRule(text) || {};
+  if (r.place) p.place = r.place; else if (!p.place) p.place = 'kast';
+  p.freezable = r.freeze ?? true;
+  p.open_shelf_days = r.open ?? null;
+  const total = qty.total;
+  if (total) { p.full_grams = total; p.grams = total; p.grams_per_unit = qty.per || total; }
+  p.track = r.track || (qty.liquid ? 'niveau' : qty.count ? 'aantal' : 'aantal');
+  p.level = 'Vol';
+  if (p.track === 'aantal') {
+    if (r.unit === 'plakken') {
+      p.unit = 'plakken'; p.grams_per_unit = r.gpu;
+      p.count = total ? Math.max(1, Math.round(total / r.gpu)) : 10;
+    } else if (qty.count) {
+      p.count = qty.count;
+      p.unit = r.unit || 'stuks';
+      if (qty.per) p.grams_per_unit = qty.per; else if (total) p.grams_per_unit = Math.max(1, Math.round(total / qty.count)); else if (r.gpu) p.grams_per_unit = r.gpu;
+    } else {
+      p.count = 1; p.unit = r.unit || 'stuks';
+      if (r.gpu && !total) p.grams_per_unit = r.gpu;
+    }
+  } else if (p.track === 'gram') {
+    p.grams = total || 500;
+  } else {
+    p.unit = 'pakken';
+  }
+  p._ruleDays = r.days || null;
+  p.expires_on = r.days ? addDays(today(), r.days) : null;
+  p.expEstimated = !!r.days;
+  return r;
+}
+
+const MEMORY_FIELDS = ['name', 'place', 'track', 'unit', 'grams_per_unit', 'full_grams', 'open_shelf_days', 'freezable', ...INFO_FIELDS];
+function applyMemory(p, mem) {
+  MEMORY_FIELDS.forEach((f) => { if (mem[f] !== undefined) p[f] = mem[f]; });
+  p.count = mem.count ?? Math.max(1, Math.round((mem.full_grams || 1) / (mem.grams_per_unit || 1)));
+  p.grams = mem.grams ?? mem.full_grams ?? 0;
+  p.level = 'Vol';
+  if (mem.shelf_days) { p.expires_on = addDays(today(), mem.shelf_days); p.expEstimated = true; p._ruleDays = mem.shelf_days; }
+}
+
+async function rememberProduct(p, row, isNew) {
+  if (!row.barcode || !state.user) return;
+  const prev = state.memory[row.barcode] || {};
+  const data = { ...prev };
+  MEMORY_FIELDS.forEach((f) => { data[f] = row[f] ?? null; });
+  if (isNew) { data.count = row.count; data.grams = row.grams; }
+  if (row.expires_on && row.place !== 'vriezer') {
+    const base = p.created_at ? iso(new Date(p.created_at)) : today();
+    const d = Math.round((parseDate(row.expires_on) - parseDate(base)) / 86400000);
+    if (d > 0 && d < 1500) data.shelf_days = d;
+  }
+  state.memory[row.barcode] = data;
+  try { await db.from('product_memory').upsert({ user_id: state.user.id, barcode: row.barcode, data }, { onConflict: 'user_id,barcode' }); } catch (e) { /* geheugen is optioneel */ }
 }
 
 async function lookupOpenFoodFacts(code) {
@@ -540,53 +683,122 @@ async function lookupOpenFoodFacts(code) {
   const j = await res.json();
   return j.status === 1 && j.product ? j.product : null;
 }
-async function handleCode(raw) {
-  const code = String(raw || '').replace(/\D/g, '');
-  if (code.length < 6) { setStatus('Dat lijkt geen geldige barcode. Probeer het nog eens.'); return; }
-  if (state.handling) return;
-  state.handling = true;
-  await stopScan();
-  setStatus('Product opzoeken…');
-
+async function buildFromCode(code) {
   const p = blankProduct();
   p.barcode = code;
-  let info;
   const known = state.products.find((x) => x.barcode === code);
-  if (known) {
-    Object.assign(p, {
-      name: known.name, track: known.track, unit: known.unit, grams_per_unit: known.grams_per_unit,
-      full_grams: known.full_grams, open_shelf_days: known.open_shelf_days, freezable: known.freezable, place: known.place,
-      count: Math.max(1, Math.round(known.full_grams / known.grams_per_unit)), grams: known.full_grams, level: 'Vol'
-    });
-    if (known.track === 'aantal' && known.unit === 'stuks') p.count = 1;
-    INFO_FIELDS.forEach((f) => { p[f] = known[f] ?? null; });
-    info = 'Dit product had je al eerder, dus de instellingen zijn overgenomen. Vul de houdbaarheidsdatum in.';
-  } else {
-    try {
-      const prod = await lookupOpenFoodFacts(code);
-      if (prod) {
-        p.name = (prod.product_name_nl || prod.product_name || prod.brands || '').trim().slice(0, 100);
-        Object.assign(p, offToInfo(prod));
-        const qty = Number(prod.product_quantity);
-        const unitTxt = `${prod.product_quantity_unit || ''} ${prod.quantity || ''}`.toLowerCase();
-        const liquid = /\bml\b|\bcl\b|\bl\b|liter/.test(unitTxt);
-        if (qty > 0) { p.grams_per_unit = Math.round(qty); p.full_grams = Math.round(qty); p.grams = Math.round(qty); }
-        if (qty > 0 && liquid) { p.track = 'niveau'; p.level = 'Vol'; p.unit = 'pakken'; }
-        else { p.track = 'aantal'; p.count = 1; p.unit = 'stuks'; }
-        const cats = (prod.categories_tags || []).join(' ');
-        p.open_shelf_days = guessOpenDays(`${p.name} ${prod.generic_name_nl || ''} ${cats}`);
-        info = `Gevonden via Open Food Facts${prod.quantity ? ' (' + prod.quantity + ')' : ''}. Controleer de gegevens en vul de houdbaarheidsdatum in.` + (p.open_shelf_days ? ' "Na openen goed" is een schatting.' : '');
-        if (!p.name) info = 'Gevonden, maar zonder naam. Vul de naam zelf in.';
-      } else {
-        info = 'Dit product staat (nog) niet in Open Food Facts. Vul de gegevens zelf in; de volgende keer onthoudt Schappie het.';
-      }
-    } catch (e) {
-      info = 'Opzoeken lukte niet. Heb je internet? Vul de gegevens zelf in.';
-    }
+  const mem = state.memory[code] || (known ? Object.fromEntries(MEMORY_FIELDS.map((f) => [f, known[f]])) : null);
+  if (mem && mem.name) { applyMemory(p, mem); return { p, source: 'memory' }; }
+  let prod = null, failed = false;
+  try { prod = await lookupOpenFoodFacts(code); } catch (e) { failed = true; }
+  if (prod) {
+    p.name = (prod.product_name_nl || prod.product_name || '').trim().slice(0, 100);
+    Object.assign(p, offToInfo(prod));
+    if (!p.name && p.brand) p.name = p.brand;
+    const text = `${p.name} ${prod.generic_name_nl || ''} ${prod.categories || ''} ${(prod.categories_tags || []).join(' ')}`;
+    applyRules(p, text, parseQuantity(prod));
+    return { p, source: 'off' };
   }
+  return { p, source: failed ? 'offline' : 'unknown' };
+}
+
+let lastCode = '', lastTime = 0;
+async function onDetected(raw) {
+  const code = String(raw || '').replace(/\D/g, '');
+  if (code.length < 6) { setStatus('Dat lijkt geen geldige barcode. Probeer het nog eens.'); return true; }
+  if (state.handling) return true;
+  if (state.batch && code === lastCode && Date.now() - lastTime < 5000) return true;
+  lastCode = code; lastTime = Date.now();
+  state.handling = true;
+  if (!state.batch) await stopScan();
+  setStatus('Product opzoeken…');
+  const r = await buildFromCode(code);
   state.handling = false;
-  state.edit = p; state.info = info; state.note = ''; state.error = ''; state.confirmDelete = false;
+
+  if (!r.p.name) {
+    const wasBatch = state.batch;
+    await stopScan();
+    openForm(r.p, r.source === 'offline'
+      ? 'Opzoeken lukte niet. Heb je internet? Vul de gegevens zelf in.'
+      : 'Dit product kent Schappie nog niet. Vul de naam in; de rest wordt zo veel mogelijk voor je ingevuld en de volgende keer onthouden.', wasBatch);
+    return false;
+  }
+
+  if (state.batch) {
+    const res = await saveProduct(r.p);
+    if (res.error) { setStatus('Opslaan mislukt: ' + res.error); return true; }
+    state.recent.push(`${r.p.name} · ${PLACES.find((x) => x[0] === r.p.place)[1].toLowerCase()}`);
+    const rec = document.getElementById('recent'); if (rec) rec.innerHTML = recentHtml();
+    setStatus('Toegevoegd! Scan het volgende product.');
+    toast(`${r.p.name} toegevoegd`, 'Ongedaan maken', async () => {
+      await db.from('products').delete().eq('id', res.id);
+      state.recent.pop();
+      const rec2 = document.getElementById('recent'); if (rec2) rec2.innerHTML = recentHtml();
+      toast(`${r.p.name} weer verwijderd`);
+      loadProducts();
+    });
+    loadProducts();
+    return true;
+  }
+
+  state.edit = r.p; state.note = ''; state.error = ''; state.confirmDelete = false;
+  state.info = r.source === 'memory' ? 'Dit product had je eerder, dus Schappie gebruikt jouw instellingen van toen.' : '';
+  state.returnToScan = false;
+  state.screen = 'confirm'; render(); window.scrollTo(0, 0);
+  return false;
+}
+const handleCode = onDetected;
+
+function openForm(p, info, returnToScan) {
+  state.edit = p; state.info = info || ''; state.note = ''; state.error = ''; state.confirmDelete = false;
+  state.showOpenDate = false; state.returnToScan = !!returnToScan;
   state.screen = 'form'; render(); window.scrollTo(0, 0);
+}
+
+function validate(p) {
+  if (!(p.name || '').trim()) return 'Geef het product een naam.';
+  if (p.opened_on && p.opened_on > today()) return 'De openingsdatum ligt in de toekomst.';
+  if (p.track === 'aantal' && (p.count == null || p.count < 0)) return 'Vul een geldig aantal in.';
+  if (p.track === 'gram' && (p.grams == null || p.grams < 0)) return 'Vul een geldig gewicht in.';
+  return '';
+}
+function toRow(p) {
+  const row = {
+    name: p.name.trim().slice(0, 100), place: p.place, track: p.track,
+    count: Math.round(p.count ?? 0), unit: (p.unit || 'stuks').trim().slice(0, 30),
+    grams: Math.round(p.grams ?? 0), level: p.level,
+    grams_per_unit: Math.max(1, Math.round(p.grams_per_unit || 100)),
+    full_grams: Math.max(1, Math.round(p.full_grams || 500)),
+    expires_on: p.expires_on || null, opened_on: p.opened_on || null,
+    open_shelf_days: p.open_shelf_days ? Math.max(1, Math.round(p.open_shelf_days)) : null,
+    freezable: !!p.freezable,
+    barcode: p.barcode || null
+  };
+  INFO_FIELDS.forEach((f) => { row[f] = p[f] ?? null; });
+  return row;
+}
+async function saveProduct(p) {
+  const err = validate(p);
+  if (err) return { error: err };
+  const row = toRow(p);
+  const res = p.id
+    ? await db.from('products').update(row).eq('id', p.id).select('id').single()
+    : await db.from('products').insert(row).select('id').single();
+  if (res.error) return { error: res.error.message };
+  rememberProduct(p, row, !p.id);
+  return { id: res.data.id };
+}
+async function finishSave(p) {
+  state.busy = true; state.error = ''; render();
+  const res = await saveProduct(p);
+  state.busy = false;
+  if (res.error) { state.error = res.error.startsWith('Geef') || res.error.startsWith('De ') || res.error.startsWith('Vul') ? res.error : 'Opslaan mislukt: ' + res.error; render(); return; }
+  toast(p.id ? 'Opgeslagen' : `${p.name.trim()} toegevoegd`);
+  const back2scan = state.returnToScan;
+  state.tab = p.place; state.edit = null; state.info = ''; state.note = ''; state.returnToScan = false;
+  if (back2scan) { startScan(); loadProducts(); return; }
+  state.screen = 'voorraad';
+  await loadProducts();
 }
 
 // ---------- interactie ----------
@@ -606,22 +818,40 @@ document.addEventListener('click', async (e) => {
     }
     case 'level': patchProduct(id, { level: v }); break;
     case 'open':
-      state.edit = { ...p }; state.editOriginalPlace = p.place; state.note = ''; state.info = ''; state.error = ''; state.confirmDelete = false;
-      state.screen = 'form'; render(); window.scrollTo(0, 0); break;
+      openForm({ ...p }, '', false); break;
     case 'new':
-      state.edit = blankProduct(); state.note = ''; state.info = ''; state.error = ''; state.confirmDelete = false;
-      state.screen = 'form'; render(); window.scrollTo(0, 0); break;
-    case 'back': state.screen = 'voorraad'; state.edit = null; state.info = ''; render(); break;
+      openForm(blankProduct(), '', false); break;
+    case 'back': state.screen = 'voorraad'; state.edit = null; state.info = ''; state.returnToScan = false; render(); break;
     case 'scan': startScan(); break;
     case 'scan-cancel': await stopScan(); state.screen = 'voorraad'; render(); break;
     case 'logout': await db.auth.signOut(); break;
     case 'f-place': {
-      const r = movePlace(state.edit, v);
-      state.edit = r.p; state.note = r.note; render(); break;
+      const ed = state.edit;
+      ed.placeTouched = true;
+      if (ed.id) { const r = movePlace(ed, v); state.edit = { ...r.p, placeTouched: true }; state.note = r.note; render(); break; }
+      ed.place = v; state.note = '';
+      if (ed.expEstimated || !ed.expires_on) {
+        if (v === 'vriezer') {
+          if (ed.freezable) { ed.expires_on = addDays(today(), Math.max(90, ed._ruleDays || 0)); ed.expEstimated = true; state.note = 'In de vriezer: ongeveer 3 maanden houdbaar.'; }
+          else state.note = 'Dit product kun je beter niet invriezen.';
+        } else if (ed._ruleDays) { ed.expires_on = addDays(today(), ed._ruleDays); ed.expEstimated = true; }
+      }
+      render(); break;
     }
-    case 'f-track': if (state.edit.track !== v) { state.edit = convert(state.edit, v); render(); } break;
+    case 'f-open-today': state.edit.opened_on = today(); state.showOpenDate = false; render(); break;
+    case 'f-open-other': state.showOpenDate = true; render(); { const d = document.getElementById('f-opened'); if (d) d.focus(); } break;
+    case 'confirm-add': {
+      const res0 = validate(state.edit);
+      if (res0) { state.error = res0; render(); break; }
+      await finishSave(state.edit);
+      break;
+    }
+    case 'confirm-edit': state.screen = 'form'; state.showOpenDate = false; render(); window.scrollTo(0, 0); break;
+    case 'confirm-cancel': state.screen = 'voorraad'; state.edit = null; state.info = ''; render(); break;
+    case 'batch-toggle': state.batch = el.checked; try { localStorage.setItem('schappie-batch', state.batch ? '1' : '0'); } catch (err) { /* niet erg */ } setStatus(state.batch ? 'Uitpak-modus aan: elk product wordt meteen toegevoegd.' : 'Uitpak-modus uit: je krijgt eerst een controle.'); break;
+    case 'f-track': if (state.edit.track !== v) { state.edit = { ...convert(state.edit, v), trackTouched: true }; render(); } break;
     case 'f-level': state.edit.level = v; render(); break;
-    case 'f-unopen': state.edit.opened_on = null; render(); break;
+    case 'f-unopen': state.edit.opened_on = null; state.showOpenDate = false; render(); break;
     case 'refresh': {
       el.classList.add('spin');
       try { const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); } catch (e) { /* geen probleem */ }
@@ -658,24 +888,40 @@ document.addEventListener('input', (e) => {
   else if (t.type === 'number') state.edit[f] = t.value === '' ? null : Number(t.value);
   else if (t.type === 'date') {
     state.edit[f] = t.value || null;
+    if (f === 'expires_on') { state.edit.expEstimated = false; state.edit.expTouched = true; }
     if (f === 'opened_on' || f === 'expires_on') render();
   } else state.edit[f] = t.value;
-  if (f === 'name' && !state.edit.id && !state.edit.shelfTouched) {
-    const g = guessOpenDays(t.value);
-    const box = document.getElementById('f-shelf');
-    state.edit.open_shelf_days = g;
-    if (box) box.value = g ?? '';
-  }
+  if (f === 'expires_on') { state.edit.expEstimated = false; state.edit.expTouched = true; }
   if (f === 'open_shelf_days') state.edit.shelfTouched = true;
   if (state.error) { state.error = ''; }
 });
+
+document.addEventListener('change', (e) => {
+  if (e.target.id !== 'f-name' || !state.edit || state.edit.id) return;
+  const ed = state.edit;
+  const r = findRule(ed.name);
+  if (!r) return;
+  if (!ed.placeTouched && r.place) ed.place = r.place;
+  if (!ed.trackTouched && r.track) {
+    ed.track = r.track;
+    if (r.unit) ed.unit = r.unit;
+    if (r.gpu) ed.grams_per_unit = r.gpu;
+    if (r.unit === 'plakken' && ed.count <= 1) ed.count = 10;
+    if (r.track === 'gram' && !ed.grams) ed.grams = 500;
+  }
+  if (!ed.expTouched && r.days && !ed.barcode) { ed.expires_on = addDays(today(), r.days); ed.expEstimated = true; ed._ruleDays = r.days; }
+  if (!ed.shelfTouched) ed.open_shelf_days = r.open ?? null;
+  if (r.freeze != null) ed.freezable = r.freeze;
+  render();
+});
+document.addEventListener('toggle', (e) => { if (e.target.id === 'adv') state.advOpen = e.target.open; }, true);
 
 document.addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target.dataset.form;
 
   if (form === 'code') {
-    handleCode(document.getElementById('code').value);
+    onDetected(document.getElementById('code').value);
     return;
   }
 
@@ -691,34 +937,9 @@ document.addEventListener('submit', async (e) => {
   }
 
   if (form === 'product') {
-    const p = state.edit;
-    const name = (p.name || '').trim();
-    if (!name) { state.error = 'Geef het product een naam.'; render(); document.getElementById('f-name').focus(); return; }
-    if (p.opened_on && p.opened_on > today()) { state.error = 'De openingsdatum ligt in de toekomst.'; render(); return; }
-    if (p.track === 'aantal' && (p.count == null || p.count < 0)) { state.error = 'Vul een geldig aantal in.'; render(); return; }
-    if (p.track === 'gram' && (p.grams == null || p.grams < 0)) { state.error = 'Vul een geldig gewicht in.'; render(); return; }
-
-    const row = {
-      name, place: p.place, track: p.track,
-      count: Math.round(p.count ?? 0), unit: (p.unit || 'stuks').trim().slice(0, 30),
-      grams: Math.round(p.grams ?? 0), level: p.level,
-      grams_per_unit: Math.max(1, Math.round(p.grams_per_unit || 100)),
-      full_grams: Math.max(1, Math.round(p.full_grams || 500)),
-      expires_on: p.expires_on || null, opened_on: p.opened_on || null,
-      open_shelf_days: p.open_shelf_days ? Math.max(1, Math.round(p.open_shelf_days)) : null,
-      freezable: !!p.freezable,
-      barcode: p.barcode || null
-    };
-    INFO_FIELDS.forEach((f) => { row[f] = p[f] ?? null; });
-    state.busy = true; render();
-    const res = p.id
-      ? await db.from('products').update(row).eq('id', p.id)
-      : await db.from('products').insert(row);
-    state.busy = false;
-    if (res.error) { state.error = 'Opslaan mislukt: ' + res.error.message; render(); return; }
-    toast(p.id ? 'Opgeslagen' : `${name} toegevoegd`);
-    state.tab = row.place; state.screen = 'voorraad'; state.edit = null; state.info = '';
-    await loadProducts();
+    const err = validate(state.edit);
+    if (err) { state.error = err; render(); if (err.startsWith('Geef')) document.getElementById('f-name').focus(); return; }
+    await finishSave(state.edit);
   }
 });
 
