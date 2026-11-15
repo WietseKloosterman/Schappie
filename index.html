@@ -77,11 +77,24 @@
 <div id="app"></div>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+// Toon fouten op het scherm in plaats van een lege pagina
+function showFatal(msg) {
+  var app = document.getElementById('app');
+  if (app) app.innerHTML = '<main class="wrap center"><h1>Er ging iets mis</h1><p class="error" style="font-size:15px">' + String(msg).replace(/[<>&]/g, '') + '</p><p class="muted">Stuur een screenshot van dit scherm naar Claude.</p></main>';
+}
+window.addEventListener('error', function (e) { if (String(e.message).indexOf('supabase-js niet geladen') < 0) showFatal(e.message || 'Onbekende fout'); });
+window.addEventListener('unhandledrejection', function (e) { showFatal((e.reason && e.reason.message) || e.reason || 'Onbekende fout'); });
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+if (!window.supabase) document.write('<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"><\/script>');
+</script>
+<script>
+if (!window.supabase) { showFatal('De verbinding met Supabase kon niet worden geladen. Controleer je internet of probeer een andere browser.'); throw new Error('supabase-js niet geladen'); }
 // ===== INSTELLINGEN: vul deze twee in (Supabase → Project Settings → API Keys) =====
-const SUPABASE_URL = https://rvucshogutdqwjfngarc.supabase.co;
-const SUPABASE_KEY = sb_publishable_g6dwmq_7hs8li_S_ICSwXQ_Qe400crT;
+const SUPABASE_URL = 'https://rvucshogutdqwjfngarc.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_g6dwmq_7hs8li_S_ICSwXQ_Qe400crT';
 // ==================================================================================
 
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
