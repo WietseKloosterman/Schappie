@@ -67,8 +67,10 @@
   .check input { width: 22px; height: 22px; accent-color: var(--green); }
   .fab-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 20px); width: calc(100% - 40px); max-width: 520px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px; }
   .fab-bar .btn { box-shadow: 0 0 0 4px var(--bg); }
-  #reader { width: 100%; min-height: 260px; border-radius: 16px; overflow: hidden; background: #1C211D; }
-  #reader video { width: 100% !important; display: block; }
+  #reader { position: relative; width: 100%; aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; background: #1C211D; }
+  #reader video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #reader .frame { position: absolute; left: 8%; right: 8%; top: 30%; bottom: 30%; border: 2px solid #FFFFFF; border-radius: 12px; }
+  #reader .line { position: absolute; left: 10%; right: 10%; top: 50%; height: 2px; background: #6FCF86; }
   .fab { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 20px); width: calc(100% - 40px); max-width: 520px; box-shadow: 0 0 0 4px var(--bg); }
   .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 86px); width: calc(100% - 40px); max-width: 520px; background: var(--text); color: #FFFFFF; border-radius: 12px; padding: 14px 16px; font-size: 14px; font-weight: 500; z-index: 10; }
   .center { min-height: 100vh; justify-content: center; }
@@ -332,7 +334,7 @@ function viewScan() {
   return `<main class="wrap">
     <button class="link" data-action="scan-cancel"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Voorraad</button>
     <h1>Barcode scannen</h1>
-    <div id="reader"></div>
+    <div id="reader"><video id="scan-video" playsinline muted></video><div class="frame" aria-hidden="true"></div><div class="line" aria-hidden="true"></div></div>
     <p class="muted" id="scan-status" role="status" style="font-size:14px">Camera starten…</p>
     <form data-form="code" class="row" novalidate>
       <input class="input" id="code" inputmode="numeric" autocomplete="off" placeholder="Of typ de barcode in" aria-label="Barcode" style="flex:1">
@@ -358,47 +360,111 @@ function blankProduct() {
 }
 
 // ---------- barcode scannen ----------
-let scanner = null;
+const FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e'];
+let scanStream = null, scanning = false, detectorPromise = null;
 const setStatus = (msg) => { const el = document.getElementById('scan-status'); if (el) el.textContent = msg; };
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement('script');
-    el.src = src; el.onload = resolve; el.onerror = () => reject(new Error('laden mislukt'));
-    document.head.appendChild(el);
-  });
+
+function getDetector() {
+  if (!detectorPromise) {
+    detectorPromise = (async () => {
+      if ('BarcodeDetector' in window) {
+        try {
+          const sup = await window.BarcodeDetector.getSupportedFormats();
+          if (FORMATS.some((f) => sup.includes(f))) return new window.BarcodeDetector({ formats: FORMATS });
+        } catch (e) { /* val terug op de polyfill */ }
+      }
+      const mod = await import('https://fastly.jsdelivr.net/npm/barcode-detector@2/dist/es/pure.min.js');
+      return new mod.BarcodeDetector({ formats: FORMATS });
+    })();
+    detectorPromise.catch(() => { detectorPromise = null; });
+  }
+  return detectorPromise;
 }
+
 async function startScan() {
   state.screen = 'scan'; state.handling = false; render(); window.scrollTo(0, 0);
+  setStatus('Camera starten…');
   try {
-    if (!window.Html5Qrcode) {
-      try { await loadScript('https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js'); }
-      catch (e) { await loadScript('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js'); }
-    }
-    if (state.screen !== 'scan') return;
-    const F = window.Html5QrcodeSupportedFormats;
-    scanner = new window.Html5Qrcode('reader', {
-      formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E],
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-      verbose: false
-    });
-    await scanner.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: (w, h) => ({ width: Math.max(120, Math.floor(Math.min(300, w * 0.85))), height: Math.max(80, Math.floor(Math.min(160, h * 0.5))) }) },
-      (text) => { handleCode(text); },
-      () => {}
-    );
-    setStatus('Richt de camera op de barcode.');
+    const [detector, stream] = await Promise.all([
+      getDetector(),
+      navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } })
+    ]);
+    if (state.screen !== 'scan') { stream.getTracks().forEach((t) => t.stop()); return; }
+    scanStream = stream;
+    const video = document.getElementById('scan-video');
+    video.srcObject = stream;
+    await video.play();
+    try {
+      const track = stream.getVideoTracks()[0];
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    } catch (e) { /* niet elke camera ondersteunt dit */ }
+    setStatus('Houd de barcode in het kader, op 10 tot 20 cm afstand.');
+    scanning = true;
+    const tick = async () => {
+      if (!scanning) return;
+      if (video.readyState >= 2) {
+        try {
+          const codes = await detector.detect(video);
+          const hit = codes.find((c) => c.rawValue && /^\d{6,14}$/.test(c.rawValue));
+          if (hit) { if (navigator.vibrate) navigator.vibrate(60); handleCode(hit.rawValue); return; }
+        } catch (e) { /* volgend beeld proberen */ }
+      }
+      setTimeout(tick, 120);
+    };
+    tick();
   } catch (err) {
-    setStatus('De camera kon niet starten. Geef Schappie toestemming voor de camera, of typ de barcode hieronder in.');
+    const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+    setStatus(denied
+      ? 'Schappie mag de camera niet gebruiken. Geef toestemming in je instellingen, of typ de barcode hieronder in.'
+      : 'De scanner kon niet starten. Typ de barcode hieronder in.');
   }
 }
 async function stopScan() {
-  if (!scanner) return;
-  const sc = scanner; scanner = null;
-  try { if (sc.isScanning) await sc.stop(); sc.clear(); } catch (e) { /* negeren */ }
+  scanning = false;
+  if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; }
 }
+
+// Schatting: hoeveel dagen goed na openen (aan te passen in het formulier)
+const OPEN_RULES = [
+  [/geraspt|grated|shredded/, 5],
+  [/plakken|sliced|tranches/, 7],
+  [/smeerkaas|roomkaas|cream-cheese|cottage|mozzarella|ricotta|feta|burrata/, 5],
+  [/kaas|cheese/, 14],
+  [/kipfilet|kip\b|chicken|gehakt|minced|vlees|meat|beef|pork|varken|rund|vis\b|fish|zalm|salmon|garnal|shrimp/, 1],
+  [/ham\b|hams|salami|vleeswaren|cold-cut|rookvlees|kipfilet-beleg|leverworst|sausage|worst/, 4],
+  [/yoghurt|yogurt|kwark|skyr|quark/, 4],
+  [/vla\b|pudding|custard/, 3],
+  [/slagroom|kookroom|cream\b|creams|crème/, 4],
+  [/melk|milk|karnemelk|buttermilk|chocomel|oat-drink|haverdrank|soja-?drink|plant-based-milk/, 4],
+  [/sap\b|juice|smoothie/, 5],
+  [/frisdrank|soda|cola|sinas|soft-drink/, 3],
+  [/pesto/, 7],
+  [/hummus|dip\b|dips|salade|salad|spread-for-bread/, 4],
+  [/ketchup|mosterd|mustard/, 90],
+  [/mayonaise|mayonnaise|fritessaus|sauces-for-fries/, 30],
+  [/tomatenpuree|tomato-paste|passata|pastasaus|pasta-sauce|saus|sauce/, 5],
+  [/bonen|beans|kikkererwt|chickpea|mais\b|corn\b|blik|canned|tomatenblokjes|chopped-tomato/, 3],
+  [/jam\b|jams|confiture|marmelade|honing|honey/, 60],
+  [/pindakaas|peanut-butter|hazelnut-spread|chocopasta|hagelslag|sprinkles|nutella/, 90],
+  [/margarine|halvarine|bewust|boter|butter|smeerbaar|spreadable-fats|plant-based-spreads/, 30],
+  [/brood|bread|bolletjes|wraps|tortilla/, 4],
+  [/chips|crisps|nootjes|nuts/, 14],
+  [/koek|biscuit|cookie|crackers|beschuit|rusk/, 14],
+  [/muesli|granola|cereal|ontbijtgranen|havermout|oat-flakes/, 60],
+  [/koffiebonen|coffee-beans|gemalen-koffie|ground-coffee|koffie|coffee/, 30],
+  [/olie|oil|azijn|vinegar/, 180],
+  [/rijst|rice|pasta|spaghetti|penne|macaroni|noodle|meel|flour|suiker|sugar|thee|tea\b|teas/, 180],
+  [/ijs\b|ice-cream|diepvries|frozen/, 30]
+];
+function guessOpenDays(text) {
+  const t = String(text || '').toLowerCase();
+  for (const [re, days] of OPEN_RULES) if (re.test(t)) return days;
+  return null;
+}
+
 async function lookupOpenFoodFacts(code) {
-  const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_nl,brands,quantity,product_quantity,product_quantity_unit`;
+  const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_nl,generic_name_nl,brands,quantity,product_quantity,product_quantity_unit,categories_tags`;
   const res = await fetch(url);
   if (!res.ok) return null;
   const j = await res.json();
@@ -432,9 +498,12 @@ async function handleCode(raw) {
         const qty = Number(prod.product_quantity);
         const unitTxt = `${prod.product_quantity_unit || ''} ${prod.quantity || ''}`.toLowerCase();
         const liquid = /\bml\b|\bcl\b|\bl\b|liter/.test(unitTxt);
-        if (qty > 0 && liquid) { p.track = 'niveau'; p.level = 'Vol'; p.full_grams = Math.round(qty); p.unit = 'pakken'; p.grams_per_unit = Math.round(qty); }
-        else if (qty > 0) { p.track = 'gram'; p.grams = Math.round(qty); p.full_grams = Math.round(qty); }
-        info = `Gevonden via Open Food Facts${prod.quantity ? ' (' + prod.quantity + ')' : ''}. Controleer de gegevens en vul de houdbaarheidsdatum in.`;
+        if (qty > 0) { p.grams_per_unit = Math.round(qty); p.full_grams = Math.round(qty); p.grams = Math.round(qty); }
+        if (qty > 0 && liquid) { p.track = 'niveau'; p.level = 'Vol'; p.unit = 'pakken'; }
+        else { p.track = 'aantal'; p.count = 1; p.unit = 'stuks'; }
+        const cats = (prod.categories_tags || []).join(' ');
+        p.open_shelf_days = guessOpenDays(`${p.name} ${prod.generic_name_nl || ''} ${cats}`);
+        info = `Gevonden via Open Food Facts${prod.quantity ? ' (' + prod.quantity + ')' : ''}. Controleer de gegevens en vul de houdbaarheidsdatum in.` + (p.open_shelf_days ? ' "Na openen goed" is een schatting.' : '');
         if (!p.name) info = 'Gevonden, maar zonder naam. Vul de naam zelf in.';
       } else {
         info = 'Dit product staat (nog) niet in Open Food Facts. Vul de gegevens zelf in; de volgende keer onthoudt Schappie het.';
@@ -503,6 +572,13 @@ document.addEventListener('input', (e) => {
     state.edit[f] = t.value || null;
     if (f === 'opened_on' || f === 'expires_on') render();
   } else state.edit[f] = t.value;
+  if (f === 'name' && !state.edit.id && !state.edit.shelfTouched) {
+    const g = guessOpenDays(t.value);
+    const box = document.getElementById('f-shelf');
+    state.edit.open_shelf_days = g;
+    if (box) box.value = g ?? '';
+  }
+  if (f === 'open_shelf_days') state.edit.shelfTouched = true;
   if (state.error) { state.error = ''; }
 });
 
