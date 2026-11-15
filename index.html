@@ -115,7 +115,7 @@ const SUPABASE_URL = 'https://rvucshogutdqwjfngarc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_g6dwmq_7hs8li_S_ICSwXQ_Qe400crT';
 // ==================================================================================
 
-const APP_VERSION = '5';
+const APP_VERSION = '7';
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const PLACES = [['koelkast', 'Koelkast'], ['vriezer', 'Vriezer'], ['kast', 'Kast']];
@@ -131,6 +131,7 @@ const state = {
   returnToScan: false,
   showOpenDate: false,
   advOpen: false,
+  nevoOpen: false,
   info: '',
   handling: false,
   user: null,
@@ -305,7 +306,7 @@ function viewVoorraad() {
     <div class="seg" role="group" aria-label="Plek">${tabs}</div>
     <section class="card">${rows || `<p class="empty">Nog niets in je ${PLACES.find((x) => x[0] === state.tab)[1].toLowerCase()}. Voeg je eerste product toe.</p>`}</section>
     ${list.length ? '<p class="muted" style="text-align:center;font-size:12px">Tik op een product voor alle opties</p>' : ''}
-    <p class="muted" style="text-align:center;font-size:11px">Schappie versie ${APP_VERSION}</p>
+    <p class="muted" style="text-align:center;font-size:11px">Schappie versie ${APP_VERSION} · <button class="link" style="display:inline;min-height:0;font-size:11px" data-action="about">Over Schappie en bronnen</button></p>
   </main>
   <div class="fab-bar"><button class="btn ghost" data-action="new">+ Handmatig</button><button class="btn" data-action="scan">Barcode scannen</button></div>`;
 }
@@ -335,6 +336,7 @@ function viewForm() {
     <h1>${isNew ? 'Product toevoegen' : esc(p.name || 'Product')}</h1>
     ${state.info ? `<p class="note">${esc(state.info)}</p>` : ''}
     ${infoCard(p)}
+    ${p.name ? '<section class="card pad" id="prices" style="display:flex;flex-direction:column;gap:8px"><span class="label">Prijzen</span><span class="muted">Prijzen ophalen…</span></section>' : ''}
     <form data-form="product" style="display:flex;flex-direction:column;gap:20px" novalidate>
       <div class="field"><label for="f-name">Naam</label><input class="input" id="f-name" data-field="name" type="text" maxlength="100" value="${esc(p.name)}" placeholder="Bijvoorbeeld: Kaas jong belegen" required></div>
 
@@ -343,7 +345,9 @@ function viewForm() {
 
       ${amount}
 
-      <div class="field"><label for="f-exp">Houdbaar tot ${p.expEstimated ? '<span class="muted" style="font-weight:400">(geschat)</span>' : ''}</label><input class="input" id="f-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}"></div>
+      ${nevoSection(p)}
+
+      <div class="field"><label for="f-exp">Houdbaar tot ${p.expEstimated ? '<span class="muted" style="font-weight:400">(geschat)</span>' : ''}</label><input class="input" id="f-exp" data-field="expires_on" type="date" value="${p.expires_on || ''}"><a href="https://www.voedingscentrum.nl/nl/bewaarwijzer.aspx" target="_blank" rel="noopener" style="font-size:13px">Bewaaradvies opzoeken in de Bewaarwijzer van het Voedingscentrum</a></div>
 
       <div class="field"><span class="label">Geopend?</span>
         <div class="row" style="flex-wrap:wrap">
@@ -373,11 +377,12 @@ function viewForm() {
   </main>`;
 }
 
-const INFO_FIELDS = ['brand', 'quantity_text', 'image_url', 'nutriscore', 'nova_group', 'categories', 'ingredients', 'allergens', 'nutrition'];
+const INFO_FIELDS = ['brand', 'quantity_text', 'image_url', 'nutriscore', 'nova_group', 'categories', 'ingredients', 'allergens', 'nutrition', 'nutrition_source', 'nevo_code'];
 const NOVA = { 1: 'onbewerkt', 2: 'culinair ingrediënt', 3: 'bewerkt', 4: 'ultrabewerkt' };
 const ALLERGENS = { gluten: 'gluten', milk: 'melk', eggs: 'ei', soybeans: 'soja', nuts: 'noten', peanuts: 'pinda', fish: 'vis', crustaceans: 'schaaldieren', molluscs: 'weekdieren', celery: 'selderij', mustard: 'mosterd', 'sesame-seeds': 'sesam', 'sulphur-dioxide-and-sulphites': 'sulfiet', lupin: 'lupine' };
-const NUT_ROWS = [['kcal', 'Energie', 'kcal'], ['vet', 'Vet', 'g'], ['verzadigd', 'waarvan verzadigd', 'g', true], ['koolhydraten', 'Koolhydraten', 'g'], ['suikers', 'waarvan suikers', 'g', true], ['vezels', 'Vezels', 'g'], ['eiwit', 'Eiwit', 'g'], ['zout', 'Zout', 'g']];
-const hasInfo = (p) => INFO_FIELDS.some((f) => p[f] != null && p[f] !== '');
+const NUT_ROWS = [['kcal', 'Energie', 'kcal'], ['vet', 'Vet', 'g'], ['verzadigd', 'waarvan verzadigd', 'g', true], ['koolhydraten', 'Koolhydraten', 'g'], ['suikers', 'waarvan suikers', 'g', true], ['vezels', 'Vezels', 'g'], ['eiwit', 'Eiwit', 'g'], ['zout', 'Zout', 'g'], ['natrium', 'Natrium', 'mg']];
+const hasInfo = (p) => INFO_FIELDS.filter((f) => f !== 'nutrition_source' && f !== 'nevo_code').some((f) => p[f] != null && p[f] !== '');
+const NEVO_REF = 'NEVO-online versie 2025/9.0, RIVM, Bilthoven';
 
 function offToInfo(prod) {
   const n = prod.nutriments || {};
@@ -397,7 +402,9 @@ function offToInfo(prod) {
     categories: String(prod.categories || '').split(',').map((x) => x.trim()).filter(Boolean).slice(-3).join(', ').slice(0, 200) || null,
     ingredients: String(prod.ingredients_text_nl || prod.ingredients_text || '').trim().slice(0, 2000) || null,
     allergens: allergens.length ? [...new Set(allergens)].join(', ') : null,
-    nutrition: Object.values(nutrition).some((v) => v != null) ? nutrition : null
+    nutrition: Object.values(nutrition).some((v) => v != null) ? nutrition : null,
+    nutrition_source: Object.values(nutrition).some((v) => v != null) ? 'off' : null,
+    nevo_code: null
   };
 }
 
@@ -406,7 +413,10 @@ function infoCard(p) {
     return p.barcode ? `<button type="button" class="btn ghost" data-action="f-fetchinfo">Productinformatie ophalen</button>` : '';
   }
   const fmt = (v) => String(v).replace('.', ',');
-  const nut = p.nutrition ? `<div style="display:flex;flex-direction:column;gap:8px"><span class="label">Voedingswaarde per 100 g</span><div class="nut">${NUT_ROWS.filter(([k]) => p.nutrition[k] != null).map(([k, label, unit, sub]) => `<span class="${sub ? 'sub' : ''}">${label}</span><span class="${sub ? 'sub' : ''}">${esc(fmt(p.nutrition[k]))} ${unit}</span>`).join('')}</div></div>` : '';
+  const srcLine = p.nutrition_source === 'nevo'
+    ? `<span class="muted" style="font-size:12px">Bron: ${NEVO_REF}${p.nevo_code ? ` · ${esc(nevoName(p.nevo_code))}` : ''}</span>`
+    : p.nutrition_source === 'off' ? '<span class="muted" style="font-size:12px">Bron: Open Food Facts</span>' : '';
+  const nut = p.nutrition ? `<div style="display:flex;flex-direction:column;gap:8px"><span class="label">Voedingswaarde per 100 ${p.nutrition.per === 'ml' ? 'ml' : 'g'}</span><div class="nut">${NUT_ROWS.filter(([k]) => p.nutrition[k] != null).map(([k, label, unit, sub]) => `<span class="${sub ? 'sub' : ''}">${label}</span><span class="${sub ? 'sub' : ''}">${esc(fmt(p.nutrition[k]))} ${unit}</span>`).join('')}</div>${srcLine}</div>` : '';
   const meta = [p.brand, p.quantity_text].filter(Boolean).map(esc).join(' · ');
   return `<section class="card pad info" style="display:flex;flex-direction:column;gap:14px">
     <div class="row" style="align-items:flex-start;gap:12px">
@@ -424,6 +434,205 @@ function infoCard(p) {
     ${p.allergens ? `<p style="margin:0;font-size:14px"><strong style="font-weight:600">Allergenen:</strong> ${esc(p.allergens)}</p>` : ''}
     ${p.ingredients ? `<details><summary>Ingrediënten</summary><p style="margin:6px 0 0;font-size:13px;line-height:1.5;color:var(--text-2)">${esc(p.ingredients)}</p></details>` : ''}
   </section>`;
+}
+
+// ---------- Albert Heijn (onofficieel, via serverfunctie 'ah') ----------
+async function ahLookup(body) {
+  try {
+    const call = db.functions.invoke('ah', { body });
+    const timeout = new Promise((resolve) => setTimeout(() => resolve({ data: null, error: 'timeout' }), 7000));
+    const { data, error } = await Promise.race([call, timeout]);
+    if (error || !data) return null;
+    return data.result || null;
+  } catch (e) { return null; }
+}
+const euro = (n) => '€ ' + Number(n).toFixed(2).replace('.', ',');
+
+// ---------- Checkjebon (prijzen van supermarkten, open data) ----------
+const CJB_URL = 'https://raw.githubusercontent.com/supermarkt/checkjebon/main/data/supermarkets.json';
+const STORES = { ah: 'Albert Heijn', jumbo: 'Jumbo', lidl: 'Lidl', plus: 'Plus', dirk: 'Dirk', aldi: 'Aldi', vomar: 'Vomar', hoogvliet: 'Hoogvliet', dekamarkt: 'DekaMarkt', spar: 'Spar', poiesz: 'Poiesz', ekoplaza: 'Ekoplaza', coop: 'Coop', jan: 'Jan Linders', janlinders: 'Jan Linders', nettorama: 'Nettorama', picnic: 'Picnic' };
+const storeName = (c) => STORES[c] || (c.charAt(0).toUpperCase() + c.slice(1));
+let CJB = null, cjbPromise = null, cjbDate = null;
+function loadPrices() {
+  if (!cjbPromise) {
+    cjbPromise = (async () => {
+      let res = null;
+      try {
+        const cache = await caches.open('schappie-prijzen');
+        const hit = await cache.match(CJB_URL);
+        const age = hit ? Date.now() - Number(hit.headers.get('x-opgehaald') || 0) : Infinity;
+        if (hit && age < 24 * 3600 * 1000) res = hit;
+        else {
+          const fresh = await fetch(CJB_URL);
+          if (fresh.ok) {
+            const body = await fresh.clone().blob();
+            await cache.put(CJB_URL, new Response(body, { headers: { 'x-opgehaald': String(Date.now()), 'content-type': 'application/json' } }));
+            res = fresh;
+          } else res = hit;
+        }
+      } catch (e) { res = await fetch(CJB_URL); }
+      if (!res) throw new Error('prijzen niet beschikbaar');
+      const data = await res.json();
+      cjbDate = res.headers.get('x-opgehaald') ? new Date(Number(res.headers.get('x-opgehaald'))) : new Date();
+      CJB = [];
+      for (const store of data) for (const it of (store.d || [])) {
+        if (typeof it.p !== 'number' || !it.n) continue;
+        CJB.push({ store: store.n, naam: it.n, n: norm(it.n), p: it.p, s: it.s || '', l: it.l || '' });
+      }
+      return CJB;
+    })();
+    cjbPromise.catch(() => { cjbPromise = null; });
+  }
+  return cjbPromise;
+}
+function sizeInBase(s) {
+  const m = String(s || '').toLowerCase().replace(',', '.').match(/(\d+(?:\.\d+)?)\s*(kg|g|gram|ml|cl|l|liter)\b/);
+  if (!m) return null;
+  return Number(m[1]) * ({ kg: 1000, l: 1000, liter: 1000, cl: 10 }[m[2]] || 1);
+}
+// Zoekt per supermarkt het best passende (en dan goedkoopste) product
+function findPrices(name, sizeHint) {
+  if (!CJB) return [];
+  const words = norm(name).split(/\s+/).filter((w) => w.length >= 3 && !['jumbo', 'lidl', 'plus', 'aldi', 'dirk', 'biologisch'].includes(w));
+  if (!words.length) return [];
+  const best = {};
+  for (const it of CJB) {
+    let hits = 0;
+    for (const w of words) if (wordVariants(w).some((x) => it.n.includes(x))) hits++;
+    if (hits < Math.max(1, Math.ceil(words.length * 0.75))) continue;
+    let score = hits * 3 - it.n.split(' ').length * 0.2;
+    const sz = sizeInBase(it.s);
+    if (sizeHint && sz) { const ratio = sz / sizeHint; if (ratio > 0.7 && ratio < 1.4) score += 3; else score -= 2; }
+    (best[it.store] = best[it.store] || []).push({ it, score });
+  }
+  // per supermarkt: de goedkoopste van de best passende producten
+  const list = Object.values(best).map((arr) => {
+    const top = Math.max(...arr.map((x) => x.score));
+    return arr.filter((x) => x.score >= top - 1).sort((a, b) => a.it.p - b.it.p)[0];
+  });
+  if (!list.length) return [];
+  const top = Math.max(...list.map((x) => x.score));
+  return list.filter((x) => x.score >= top - 2).map((x) => x.it).sort((a, b) => a.p - b.p);
+}
+async function fillPrices(p) {
+  const box = document.getElementById('prices');
+  if (!box || !p || !p.name) return;
+  const parts = [];
+  if (p.barcode) {
+    const ah = await ahLookup({ gtin: p.barcode });
+    if (ah && ah.price != null) {
+      parts.push(`<div class="between"><span><strong style="font-weight:600">Albert Heijn nu</strong>${ah.unitSize ? ` · ${esc(ah.unitSize)}` : ''}</span><span style="font-weight:600">${euro(ah.price)}</span></div>`
+        + (ah.bonus ? `<span class="chip warn" style="align-self:flex-start">Bonus: ${esc(ah.bonusText || 'in de aanbieding')}${ah.priceBeforeBonus && ah.priceBeforeBonus !== ah.price ? ` (was ${euro(ah.priceBeforeBonus)})` : ''}</span>` : ''));
+    }
+  }
+  try {
+    await loadPrices();
+    const list = findPrices(p.name, p.full_grams || sizeInBase(p.quantity_text));
+    if (list.length) {
+      parts.push('<span class="label" style="margin-top:4px">Vergelijkbaar bij andere supermarkten</span>' + list.slice(0, 5).map((it) =>
+        `<div class="between" style="font-size:14px;gap:8px"><span style="min-width:0"><strong style="font-weight:600">${esc(storeName(it.store))}</strong> · ${esc(it.naam)}${it.s ? ` <span class="muted">(${esc(it.s)})</span>` : ''}</span><span style="white-space:nowrap">${euro(it.p)}</span></div>`).join(''));
+    }
+  } catch (e) { /* prijzen zijn optioneel */ }
+  if (!document.getElementById('prices')) return;
+  box.innerHTML = parts.length
+    ? parts.join('') + `<span class="muted" style="font-size:12px">Prijzen: Albert Heijn (live) en Checkjebon.nl (open data${cjbDate ? ', opgehaald ' + cjbDate.toLocaleDateString('nl-NL') : ''}). Andere supermarkten tonen een vergelijkbaar product, niet altijd precies hetzelfde.</span>`
+    : '<span class="muted">Geen prijzen gevonden.</span>';
+}
+
+// ---------- NEVO (RIVM) ----------
+let NEVO = null, nevoPromise = null;
+const norm = (x) => String(x || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ');
+function loadNevo() {
+  if (!nevoPromise) {
+    nevoPromise = fetch('nevo.json').then((r) => r.json()).then((d) => {
+      NEVO = d.items.map((it) => ({ code: it[0], naam: it[1], syn: it[2], groep: it[3], per: it[4], v: it.slice(5), n: norm(it[1]), k: norm(it[1] + ' ' + it[2] + ' ' + it[3]) }));
+      return NEVO;
+    });
+    nevoPromise.catch(() => { nevoPromise = null; });
+  }
+  return nevoPromise;
+}
+const nevoName = (code) => { const it = NEVO && NEVO.find((x) => x.code === code); return it ? it.naam : `NEVO-code ${code}`; };
+function wordVariants(w) {
+  const v = [w];
+  if (w === 'eieren' || w === 'eitje' || w === 'eitjes') v.push('ei');
+  if (w === 'uien') v.push('ui');
+  if (w.endsWith('en') && w.length > 4) v.push(w.slice(0, -2));
+  if (w.endsWith('s') && w.length > 3) v.push(w.slice(0, -1));
+  return v;
+}
+function nevoSearch(q, max = 8) {
+  if (!NEVO) return [];
+  const words = norm(q).split(/\s+/).filter((w) => w.length >= 2 && !['ah', 'de', 'het', 'een', 'met'].includes(w));
+  if (!words.length) return [];
+  const pats = words.map((w) => wordVariants(w).map((x) => ({ x, exact: new RegExp('\\b' + x + '\\b'), pre: new RegExp('\\b' + x) })));
+  const out = [];
+  for (const it of NEVO) {
+    if (!it.w) it.w = it.n.split(' ').filter((t) => t.length >= 4);
+    let score = 0, hits = 0;
+    for (const vs of pats) {
+      let best = 0;
+      for (const { x, exact, pre } of vs) {
+        if (exact.test(it.n)) best = Math.max(best, 4);
+        else if (pre.test(it.n)) best = Math.max(best, 2.5);
+        else if (it.k.includes(x)) best = Math.max(best, 1);
+        else if (x.length >= 6 && it.w.some((t) => x.includes(t))) best = Math.max(best, 1.5);
+      }
+      if (best) { score += best; hits++; } else score -= 1;
+    }
+    if (!hits) continue;
+    if (wordVariants(words[0]).some((x) => it.n.startsWith(x))) score += 1;
+    if (/\brauw\b|\bonbereid\b/.test(it.n)) score += 1;
+    score -= it.n.split(' ').length * 0.3;
+    out.push({ it, score, all: hits === words.length });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, max);
+}
+function nevoToNutrition(it) {
+  const [kcal, eiwit, vet, verzadigd, koolhydraten, suikers, vezels, natrium] = it.v;
+  return { kcal, vet, verzadigd, koolhydraten, suikers, vezels, eiwit, natrium, per: it.per };
+}
+function linkNevo(p, it) { p.nutrition = nevoToNutrition(it); p.nutrition_source = 'nevo'; p.nevo_code = it.code; }
+async function autoNevo(p) {
+  if ((p.nutrition && p.nutrition_source !== 'nevo') || p.nevoTouched || !p.name) return false;
+  try { await loadNevo(); } catch (e) { return false; }
+  const best = nevoSearch(p.name, 1)[0];
+  if (best && best.all) { linkNevo(p, best.it); return true; }
+  return false;
+}
+function nevoResultsHtml(q) {
+  const res = nevoSearch(q);
+  if (!q || norm(q).trim().length < 2) return '<p class="muted">Typ minstens 2 letters.</p>';
+  if (!res.length) return '<p class="muted">Niets gevonden in NEVO.</p>';
+  return res.map(({ it }) => `<button type="button" class="small-btn" style="text-align:left;justify-content:flex-start;width:100%;white-space:normal;padding:8px 12px" data-action="nevo-pick" data-value="${it.code}"><span style="display:block;font-weight:500">${esc(it.naam)}</span><span class="muted" style="font-size:12px">${esc(it.groep)} · ${it.v[0] ?? '?'} kcal per 100 ${it.per}</span></button>`).join('');
+}
+function nevoSection(p) {
+  if (p.nutrition && p.nutrition_source === 'off') return '';
+  const linked = p.nutrition_source === 'nevo'
+    ? `<div class="between card" style="padding:8px 8px 8px 14px"><span style="font-size:14px">${esc(nevoName(p.nevo_code))}</span><button type="button" class="small-btn" data-action="nevo-open">Wijzigen</button></div><span class="muted" style="font-size:12px">Bron: ${NEVO_REF}</span>`
+    : '';
+  const search = state.nevoOpen
+    ? `<input class="input" id="nevo-q" autocomplete="off" placeholder="Zoek, bijvoorbeeld: paprika rood" aria-label="Zoeken in NEVO" value="${esc(p.name || '')}">
+       <div id="nevo-results" style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow-y:auto">${nevoResultsHtml(p.name || '')}</div>
+       ${p.nutrition_source === 'nevo' ? '<button type="button" class="small-btn" data-action="nevo-clear">Koppeling weghalen</button>' : ''}`
+    : (!linked ? '<button type="button" class="small-btn" data-action="nevo-open">Voedingswaarde zoeken in NEVO</button>' : '');
+  return `<div class="field"><span class="label">Voedingswaarde</span>${linked}${search}</div>`;
+}
+
+function viewAbout() {
+  return `<main class="wrap">
+    ${back('Voorraad')}
+    <h1>Over Schappie</h1>
+    <section class="card pad" style="display:flex;flex-direction:column;gap:12px;font-size:14px;line-height:1.6">
+      <h2>Bronnen</h2>
+      <p style="margin:0"><strong style="font-weight:600">Open Food Facts</strong>: productinformatie bij gescande barcodes. Gegevens beschikbaar onder de Open Database License. <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">openfoodfacts.org</a></p>
+      <p style="margin:0"><strong style="font-weight:600">NEVO</strong>: voedingswaarden van producten zonder barcode. ${NEVO_REF}. De waarden zijn ongewijzigd overgenomen. Berekende waarden zijn gebaseerd op gegevens van ${NEVO_REF} en andere gegevens. <a href="https://www.rivm.nl/nevo" target="_blank" rel="noopener">rivm.nl/nevo</a></p>
+      <p style="margin:0"><strong style="font-weight:600">Albert Heijn</strong>: productinformatie als Open Food Facts een product niet kent, en de actuele AH-prijs en bonus. Via de onofficiële API van de AH-app; kan zonder waarschuwing stoppen met werken.</p>
+      <p style="margin:0"><strong style="font-weight:600">Checkjebon.nl</strong>: prijzen van andere supermarkten, uit de open data van Checkjebon.nl (wordt ongeveer dagelijks bijgewerkt). Schappie zoekt een vergelijkbaar product; dat is niet altijd precies hetzelfde. <a href="https://www.checkjebon.nl" target="_blank" rel="noopener">checkjebon.nl</a></p>
+      <p style="margin:0"><strong style="font-weight:600">Houdbaarheid</strong>: schattingen van Schappie op basis van de productsoort en jouw eigen aanpassingen, in lijn met de algemene adviezen van het Voedingscentrum (koelverse producten maximaal 4 dagen na openen, vleesvervangers ongeveer 2 dagen, sauzen na openen in de koelkast). Kijk bij twijfel op de verpakking of in de <a href="https://www.voedingscentrum.nl/nl/bewaarwijzer.aspx" target="_blank" rel="noopener">Bewaarwijzer van het Voedingscentrum</a>.</p>
+    </section>
+    <p class="muted" style="text-align:center">Schappie versie ${APP_VERSION}</p>
+  </main>`;
 }
 
 function viewScan() {
@@ -470,12 +679,14 @@ function viewConfirm() {
       <div class="between"><span class="label">Hoeveelheid</span><span style="font-size:15px;font-weight:500">${esc(amountText(p))}</span></div>
       ${p.open_shelf_days ? `<div class="between"><span class="label">Na openen goed</span><span style="font-size:15px">${p.open_shelf_days} ${p.open_shelf_days === 1 ? 'dag' : 'dagen'}</span></div>` : ''}
     </section>
+    <section class="card pad" id="prices" style="display:flex;flex-direction:column;gap:8px"><span class="label">Prijzen</span><span class="muted">Prijzen ophalen…</span></section>
     ${state.error ? `<p class="error" role="alert">${esc(state.error)}</p>` : ''}
     <button class="btn" data-action="confirm-add" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Toevoegen…' : 'Toevoegen'}</button>
     <button class="btn ghost" data-action="confirm-edit">Aanpassen</button>
   </main>`;
 }
 
+const pricesCache = { key: '', html: '' };
 function render() {
   const app = document.getElementById('app');
   if (state.screen === 'loading') app.innerHTML = '<main class="wrap center"><p class="muted" style="text-align:center">Laden…</p></main>';
@@ -483,7 +694,13 @@ function render() {
   else if (state.screen === 'form') app.innerHTML = viewForm();
   else if (state.screen === 'scan') app.innerHTML = viewScan();
   else if (state.screen === 'confirm') app.innerHTML = viewConfirm();
+  else if (state.screen === 'about') app.innerHTML = viewAbout();
   else app.innerHTML = viewVoorraad();
+  if ((state.screen === 'form' || state.screen === 'confirm') && state.edit && state.edit.name && document.getElementById('prices')) {
+    const key = (state.edit.barcode || '') + '|' + state.edit.name;
+    if (pricesCache.key === key && pricesCache.html) document.getElementById('prices').innerHTML = pricesCache.html;
+    else fillPrices(state.edit).then(() => { const b = document.getElementById('prices'); if (b) { pricesCache.key = key; pricesCache.html = b.innerHTML; } });
+  }
 }
 
 function blankProduct() {
@@ -564,11 +781,12 @@ async function stopScan() {
 // place = plek, track = bijhouden in, days = houdbaar (ongeopend) vanaf vandaag, open = dagen goed na openen, freeze = kan in vriezer
 const RULES = [
   { re: /frozen|diepvries|bevroren|surgel|\bijs\b|ice-cream|ijsjes/, place: 'vriezer', days: 180, open: 30, freeze: true },
-  { re: /geraspt|grated|shredded/, place: 'koelkast', days: 28, open: 5, freeze: true },
-  { re: /plakken|sliced|tranches/, place: 'koelkast', track: 'aantal', unit: 'plakken', gpu: 20, days: 21, open: 7, freeze: true },
-  { re: /smeerkaas|roomkaas|cream-cheese|cottage|mozzarella|ricotta|feta|burrata|mascarpone/, place: 'koelkast', days: 14, open: 5, freeze: false },
+  { re: /geraspt|grated|shredded/, place: 'koelkast', days: 28, open: 4, freeze: true },
+  { re: /plakken|sliced|tranches/, place: 'koelkast', track: 'aantal', unit: 'plakken', gpu: 20, days: 21, open: 4, freeze: true },
+  { re: /smeerkaas|roomkaas|cream-cheese|cottage|mozzarella|ricotta|feta|burrata|mascarpone/, place: 'koelkast', days: 14, open: 4, freeze: false },
   { re: /kaas|cheese/, place: 'koelkast', days: 35, open: 14, freeze: true },
   { re: /\bham\b|hams|salami|vleeswaren|cold-cut|rookvlees|leverworst|cervelaat|filet-americain|ontbijtspek|bacon|spekreep/, place: 'koelkast', days: 10, open: 4, freeze: true },
+  { re: /vleesvervanger|meat-analogue|meat-substitute|vegetarische|vegan-burger|tofu|tempeh|seitan|vega-?burger|vegetarisch-gehakt|kipstuckjes-vega/, place: 'koelkast', days: 14, open: 2, freeze: true },
   { re: /kipfilet|kipdij|\bkip\b|chicken|gehakt|minced|biefstuk|steak|vlees|meat|beef|pork|varken|rund|worst|sausage|schnitzel|\bvis\b|fish|zalm|salmon|kabeljauw|garnal|shrimp/, place: 'koelkast', days: 4, open: 1, freeze: true },
   { re: /eieren|\beggs?\b/, place: 'koelkast', track: 'aantal', unit: 'stuks', gpu: 60, days: 28, open: null, freeze: false },
   { re: /yoghurt|yogurt|kwark|skyr|quark/, place: 'koelkast', days: 14, open: 4, freeze: false },
@@ -578,17 +796,19 @@ const RULES = [
   { re: /melk|milk|chocomel|oat-drink|haverdrank|soja-?drink|plant-based-milk|amandeldrink/, place: 'koelkast', track: 'niveau', days: 8, open: 4, freeze: true },
   { re: /margarine|halvarine|bewust|boter|butter|smeerbaar|spreadable-fats|plant-based-spreads|becel|blue-band/, place: 'koelkast', days: 60, open: 30, freeze: true },
   { re: /versgeperst|smoothie|fresh-juice|vers-sap/, place: 'koelkast', track: 'niveau', days: 7, open: 3, freeze: false },
-  { re: /\bsap\b|juice|nectar|siroop|syrup|limonade/, place: 'kast', track: 'niveau', days: 240, open: 7, freeze: false },
+  { re: /\bsap\b|juice|nectar/, place: 'kast', track: 'niveau', days: 240, open: 5, freeze: false, openPlace: 'koelkast' },
+  { re: /siroop|syrup|limonade/, place: 'kast', track: 'niveau', days: 365, open: 7, freeze: false, openPlace: 'koelkast' },
   { re: /frisdrank|soda|\bcola\b|sinas|soft-drink|bruiswater|mineraalwater|\bwater\b|waters/, place: 'kast', track: 'niveau', days: 365, open: 3, freeze: false },
   { re: /\bbier\b|beer|\bwijn\b|wine/, place: 'kast', days: 365, open: 3, freeze: false },
-  { re: /pesto/, place: 'kast', track: 'niveau', days: 270, open: 7, freeze: true },
+  { re: /pesto/, place: 'kast', track: 'niveau', days: 270, open: 7, freeze: true, openPlace: 'koelkast' },
   { re: /hummus|\bdip\b|dips|salade\b|spread-for-bread|tapenade|guacamole/, place: 'koelkast', days: 10, open: 4, freeze: false },
-  { re: /ketchup|mosterd|mustard/, place: 'kast', track: 'niveau', days: 365, open: 90, freeze: false },
-  { re: /mayonaise|mayonnaise|fritessaus|sauces-for-fries|satesaus|peanut-sauce/, place: 'kast', track: 'niveau', days: 270, open: 30, freeze: false },
-  { re: /tomatenpuree|tomato-paste/, place: 'kast', days: 540, open: 5, freeze: true },
-  { re: /passata|pastasaus|pasta-sauce|\bsaus\b|sauce|currypasta|curry-paste/, place: 'kast', track: 'niveau', days: 365, open: 5, freeze: true },
-  { re: /bonen|beans|kikkererwt|chickpea|linzen|lentil|\bmais\b|\bcorn\b|canned|conserven|tomatenblokjes|chopped-tomato|tonijn|tuna/, place: 'kast', track: 'aantal', unit: 'blikken', days: 730, open: 3, freeze: false },
-  { re: /\bjam\b|jams|confiture|marmelade|honing|honey|stroop/, place: 'kast', track: 'niveau', days: 540, open: 90, freeze: false },
+  { re: /ketchup|mosterd|mustard/, place: 'kast', track: 'niveau', days: 365, open: 90, freeze: false, openPlace: 'koelkast' },
+  { re: /mayonaise|mayonnaise|fritessaus|sauces-for-fries|satesaus|peanut-sauce/, place: 'kast', track: 'niveau', days: 270, open: 30, freeze: false, openPlace: 'koelkast' },
+  { re: /tomatenpuree|tomato-paste/, place: 'kast', days: 540, open: 5, freeze: true, openPlace: 'koelkast' },
+  { re: /passata|pastasaus|pasta-sauce|\bsaus\b|sauce|currypasta|curry-paste/, place: 'kast', track: 'niveau', days: 365, open: 5, freeze: true, openPlace: 'koelkast' },
+  { re: /bonen|beans|kikkererwt|chickpea|linzen|lentil|\bmais\b|\bcorn\b|canned|conserven|tomatenblokjes|chopped-tomato|tonijn|tuna/, place: 'kast', track: 'aantal', unit: 'blikken', days: 730, open: 3, freeze: false, openPlace: 'koelkast' },
+  { re: /\bjam\b|jams|confiture|marmelade/, place: 'kast', track: 'niveau', days: 540, open: 60, freeze: false, openPlace: 'koelkast' },
+  { re: /honing|honey|stroop/, place: 'kast', track: 'niveau', days: 730, open: 365, freeze: false },
   { re: /pindakaas|peanut-butter|hazelnut-spread|chocopasta|nutella|speculoospasta/, place: 'kast', track: 'niveau', days: 270, open: 90, freeze: false },
   { re: /hagelslag|sprinkles|vlokken|muisjes/, place: 'kast', track: 'niveau', days: 365, open: 180, freeze: false },
   { re: /brood|bread|bolletjes|wraps|tortilla|\bpita\b|croissant|baguette/, place: 'kast', days: 4, open: null, freeze: true },
@@ -610,7 +830,11 @@ function guessOpenDays(text) { const r = findRule(text); return r ? r.open : nul
 // Leest bijvoorbeeld "4 x 150 g" of "10 stuks" uit de inhoud
 function parseQuantity(prod) {
   const q = String(prod.quantity || '').toLowerCase().replace(',', '.');
-  const total = Number(prod.product_quantity) > 0 ? Math.round(Number(prod.product_quantity)) : null;
+  let total = Number(prod.product_quantity) > 0 ? Math.round(Number(prod.product_quantity)) : null;
+  if (!total) {
+    const t = q.match(/(\d+(?:\.\d+)?)\s*(kg|g|gr|gram|ml|cl|l|liter)\b/);
+    if (t) total = Math.round(Number(t[1]) * ({ kg: 1000, l: 1000, liter: 1000, cl: 10 }[t[2]] || 1));
+  }
   const unitTxt = `${prod.product_quantity_unit || ''} ${q}`;
   const liquid = /\bml\b|\bcl\b|\bl\b|liter|litre/.test(unitTxt);
   let count = null, per = null;
@@ -624,7 +848,7 @@ function applyRules(p, text, qty) {
   const r = findRule(text) || {};
   if (r.place) p.place = r.place; else if (!p.place) p.place = 'kast';
   p.freezable = r.freeze ?? true;
-  p.open_shelf_days = r.open ?? null;
+  p.open_shelf_days = r.open !== undefined ? r.open : (p.place === 'koelkast' ? 4 : null);
   const total = qty.total;
   if (total) { p.full_grams = total; p.grams = total; p.grams_per_unit = qty.per || total; }
   p.track = r.track || (qty.liquid ? 'niveau' : qty.count ? 'aantal' : 'aantal');
@@ -690,14 +914,32 @@ async function buildFromCode(code) {
   const mem = state.memory[code] || (known ? Object.fromEntries(MEMORY_FIELDS.map((f) => [f, known[f]])) : null);
   if (mem && mem.name) { applyMemory(p, mem); return { p, source: 'memory' }; }
   let prod = null, failed = false;
+  const ahPromise = ahLookup({ gtin: code });
   try { prod = await lookupOpenFoodFacts(code); } catch (e) { failed = true; }
+  if (prod && !(prod.product_name_nl || prod.product_name)) {
+    const ahp = await ahPromise;
+    if (ahp && ahp.title) prod.product_name = ahp.title;
+  }
   if (prod) {
     p.name = (prod.product_name_nl || prod.product_name || '').trim().slice(0, 100);
     Object.assign(p, offToInfo(prod));
     if (!p.name && p.brand) p.name = p.brand;
     const text = `${p.name} ${prod.generic_name_nl || ''} ${prod.categories || ''} ${(prod.categories_tags || []).join(' ')}`;
     applyRules(p, text, parseQuantity(prod));
+    if (!p.nutrition) await autoNevo(p);
     return { p, source: 'off' };
+  }
+  const ah = await ahPromise;
+  if (ah && ah.title) {
+    p.name = ah.title.slice(0, 100);
+    p.brand = ah.brand || null;
+    p.quantity_text = ah.unitSize || null;
+    p.image_url = /^https:\/\//.test(ah.image || '') ? ah.image : null;
+    p.nutriscore = /^[a-e]$/i.test(ah.nutriscore || '') ? ah.nutriscore.toLowerCase() : null;
+    p.categories = ah.category || null;
+    applyRules(p, `${ah.title} ${ah.category || ''}`, parseQuantity({ quantity: ah.unitSize || '' }));
+    await autoNevo(p);
+    return { p, source: 'ah' };
   }
   return { p, source: failed ? 'offline' : 'unknown' };
 }
@@ -742,7 +984,7 @@ async function onDetected(raw) {
   }
 
   state.edit = r.p; state.note = ''; state.error = ''; state.confirmDelete = false;
-  state.info = r.source === 'memory' ? 'Dit product had je eerder, dus Schappie gebruikt jouw instellingen van toen.' : '';
+  state.info = r.source === 'memory' ? 'Dit product had je eerder, dus Schappie gebruikt jouw instellingen van toen.' : r.source === 'ah' ? 'Niet gevonden in Open Food Facts, wel bij Albert Heijn.' : '';
   state.returnToScan = false;
   state.screen = 'confirm'; render(); window.scrollTo(0, 0);
   return false;
@@ -751,7 +993,7 @@ const handleCode = onDetected;
 
 function openForm(p, info, returnToScan) {
   state.edit = p; state.info = info || ''; state.note = ''; state.error = ''; state.confirmDelete = false;
-  state.showOpenDate = false; state.returnToScan = !!returnToScan;
+  state.showOpenDate = false; state.nevoOpen = false; state.returnToScan = !!returnToScan;
   state.screen = 'form'; render(); window.scrollTo(0, 0);
 }
 
@@ -838,7 +1080,26 @@ document.addEventListener('click', async (e) => {
       }
       render(); break;
     }
-    case 'f-open-today': state.edit.opened_on = today(); state.showOpenDate = false; render(); break;
+    case 'about': state.screen = 'about'; render(); window.scrollTo(0, 0); break;
+    case 'nevo-open': {
+      state.nevoOpen = true;
+      try { await loadNevo(); } catch (err) { toast('NEVO-gegevens laden mislukt'); state.nevoOpen = false; }
+      render();
+      const q = document.getElementById('nevo-q'); if (q) q.focus();
+      break;
+    }
+    case 'nevo-pick': {
+      const it = NEVO && NEVO.find((x) => x.code === Number(v));
+      if (it) { linkNevo(state.edit, it); state.edit.nevoTouched = true; }
+      state.nevoOpen = false; render(); break;
+    }
+    case 'nevo-clear': state.edit.nutrition = null; state.edit.nutrition_source = null; state.edit.nevo_code = null; state.edit.nevoTouched = true; state.nevoOpen = false; render(); break;
+    case 'f-open-today': {
+      const ed = state.edit; ed.opened_on = today(); state.showOpenDate = false;
+      const r = findRule(`${ed.name} ${ed.categories || ''}`);
+      if (r && r.openPlace && ed.place !== r.openPlace) { ed.place = r.openPlace; state.note = 'Na openen bewaar je dit in de koelkast (advies Voedingscentrum). Ik heb het verplaatst.'; }
+      render(); break;
+    }
     case 'f-open-other': state.showOpenDate = true; render(); { const d = document.getElementById('f-opened'); if (d) d.focus(); } break;
     case 'confirm-add': {
       const res0 = validate(state.edit);
@@ -846,7 +1107,7 @@ document.addEventListener('click', async (e) => {
       await finishSave(state.edit);
       break;
     }
-    case 'confirm-edit': state.screen = 'form'; state.showOpenDate = false; render(); window.scrollTo(0, 0); break;
+    case 'confirm-edit': state.screen = 'form'; state.showOpenDate = false; state.nevoOpen = false; render(); window.scrollTo(0, 0); break;
     case 'confirm-cancel': state.screen = 'voorraad'; state.edit = null; state.info = ''; render(); break;
     case 'batch-toggle': state.batch = el.checked; try { localStorage.setItem('schappie-batch', state.batch ? '1' : '0'); } catch (err) { /* niet erg */ } setStatus(state.batch ? 'Uitpak-modus aan: elk product wordt meteen toegevoegd.' : 'Uitpak-modus uit: je krijgt eerst een controle.'); break;
     case 'f-track': if (state.edit.track !== v) { state.edit = { ...convert(state.edit, v), trackTouched: true }; render(); } break;
@@ -881,6 +1142,7 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'nevo-q') { const box = document.getElementById('nevo-results'); if (box) box.innerHTML = nevoResultsHtml(e.target.value); return; }
   const f = e.target.dataset?.field;
   if (!f || !state.edit) return;
   const t = e.target;
@@ -896,11 +1158,12 @@ document.addEventListener('input', (e) => {
   if (state.error) { state.error = ''; }
 });
 
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
   if (e.target.id !== 'f-name' || !state.edit || state.edit.id) return;
   const ed = state.edit;
+  const linked = await autoNevo(ed);
   const r = findRule(ed.name);
-  if (!r) return;
+  if (!r) { if (linked) render(); return; }
   if (!ed.placeTouched && r.place) ed.place = r.place;
   if (!ed.trackTouched && r.track) {
     ed.track = r.track;
