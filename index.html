@@ -65,6 +65,10 @@
   .error { margin: 0; font-size: 13px; color: var(--op); }
   .check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 15px; }
   .check input { width: 22px; height: 22px; accent-color: var(--green); }
+  .fab-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 20px); width: calc(100% - 40px); max-width: 520px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px; }
+  .fab-bar .btn { box-shadow: 0 0 0 4px var(--bg); }
+  #reader { width: 100%; min-height: 260px; border-radius: 16px; overflow: hidden; background: #1C211D; }
+  #reader video { width: 100% !important; display: block; }
   .fab { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 20px); width: calc(100% - 40px); max-width: 520px; box-shadow: 0 0 0 4px var(--bg); }
   .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 86px); width: calc(100% - 40px); max-width: 520px; background: var(--text); color: #FFFFFF; border-radius: 12px; padding: 14px 16px; font-size: 14px; font-weight: 500; z-index: 10; }
   .center { min-height: 100vh; justify-content: center; }
@@ -105,7 +109,9 @@ const LEVELS = ['Vol', 'Half', 'Leeg'];
 const FRAC = { Vol: 1, Half: 0.5, Leeg: 0 };
 
 const state = {
-  screen: 'loading',   // loading | login | voorraad | form
+  screen: 'loading',   // loading | login | voorraad | form | scan
+  info: '',
+  handling: false,
   user: null,
   products: [],
   tab: 'koelkast',
@@ -266,7 +272,7 @@ function viewVoorraad() {
     <section class="card">${rows || `<p class="empty">Nog niets in je ${PLACES.find((x) => x[0] === state.tab)[1].toLowerCase()}. Voeg je eerste product toe.</p>`}</section>
     ${list.length ? '<p class="muted" style="text-align:center;font-size:12px">Tik op een product voor alle opties</p>' : ''}
   </main>
-  <button class="btn fab" data-action="new">+ Product toevoegen</button>`;
+  <div class="fab-bar"><button class="btn ghost" data-action="new">+ Handmatig</button><button class="btn" data-action="scan">Barcode scannen</button></div>`;
 }
 
 function viewForm() {
@@ -292,6 +298,7 @@ function viewForm() {
   return `<main class="wrap">
     ${back('Voorraad')}
     <h1>${isNew ? 'Product toevoegen' : esc(p.name || 'Product')}</h1>
+    ${state.info ? `<p class="note">${esc(state.info)}</p>` : ''}
     <form data-form="product" style="display:flex;flex-direction:column;gap:20px" novalidate>
       <div class="field"><label for="f-name">Naam</label><input class="input" id="f-name" data-field="name" type="text" maxlength="100" value="${esc(p.name)}" placeholder="Bijvoorbeeld: Kaas jong belegen" required></div>
 
@@ -321,11 +328,25 @@ function viewForm() {
   </main>`;
 }
 
+function viewScan() {
+  return `<main class="wrap">
+    <button class="link" data-action="scan-cancel"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Voorraad</button>
+    <h1>Barcode scannen</h1>
+    <div id="reader"></div>
+    <p class="muted" id="scan-status" role="status" style="font-size:14px">Camera starten…</p>
+    <form data-form="code" class="row" novalidate>
+      <input class="input" id="code" inputmode="numeric" autocomplete="off" placeholder="Of typ de barcode in" aria-label="Barcode" style="flex:1">
+      <button class="small-btn" style="height:48px" type="submit">Zoeken</button>
+    </form>
+  </main>`;
+}
+
 function render() {
   const app = document.getElementById('app');
   if (state.screen === 'loading') app.innerHTML = '<main class="wrap center"><p class="muted" style="text-align:center">Laden…</p></main>';
   else if (state.screen === 'login') app.innerHTML = viewLogin();
   else if (state.screen === 'form') app.innerHTML = viewForm();
+  else if (state.screen === 'scan') app.innerHTML = viewScan();
   else app.innerHTML = viewVoorraad();
 }
 
@@ -334,6 +355,97 @@ function blankProduct() {
     name: '', place: state.tab, track: 'aantal', count: 1, unit: 'stuks', grams: 0, level: 'Vol',
     grams_per_unit: 100, full_grams: 500, expires_on: null, open_shelf_days: null, opened_on: null, freezable: true
   };
+}
+
+// ---------- barcode scannen ----------
+let scanner = null;
+const setStatus = (msg) => { const el = document.getElementById('scan-status'); if (el) el.textContent = msg; };
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src; el.onload = resolve; el.onerror = () => reject(new Error('laden mislukt'));
+    document.head.appendChild(el);
+  });
+}
+async function startScan() {
+  state.screen = 'scan'; state.handling = false; render(); window.scrollTo(0, 0);
+  try {
+    if (!window.Html5Qrcode) {
+      try { await loadScript('https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js'); }
+      catch (e) { await loadScript('https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js'); }
+    }
+    if (state.screen !== 'scan') return;
+    const F = window.Html5QrcodeSupportedFormats;
+    scanner = new window.Html5Qrcode('reader', {
+      formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E],
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      verbose: false
+    });
+    await scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: (w, h) => ({ width: Math.max(120, Math.floor(Math.min(300, w * 0.85))), height: Math.max(80, Math.floor(Math.min(160, h * 0.5))) }) },
+      (text) => { handleCode(text); },
+      () => {}
+    );
+    setStatus('Richt de camera op de barcode.');
+  } catch (err) {
+    setStatus('De camera kon niet starten. Geef Schappie toestemming voor de camera, of typ de barcode hieronder in.');
+  }
+}
+async function stopScan() {
+  if (!scanner) return;
+  const sc = scanner; scanner = null;
+  try { if (sc.isScanning) await sc.stop(); sc.clear(); } catch (e) { /* negeren */ }
+}
+async function lookupOpenFoodFacts(code) {
+  const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_nl,brands,quantity,product_quantity,product_quantity_unit`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const j = await res.json();
+  return j.status === 1 && j.product ? j.product : null;
+}
+async function handleCode(raw) {
+  const code = String(raw || '').replace(/\D/g, '');
+  if (code.length < 6) { setStatus('Dat lijkt geen geldige barcode. Probeer het nog eens.'); return; }
+  if (state.handling) return;
+  state.handling = true;
+  await stopScan();
+  setStatus('Product opzoeken…');
+
+  const p = blankProduct();
+  p.barcode = code;
+  let info;
+  const known = state.products.find((x) => x.barcode === code);
+  if (known) {
+    Object.assign(p, {
+      name: known.name, track: known.track, unit: known.unit, grams_per_unit: known.grams_per_unit,
+      full_grams: known.full_grams, open_shelf_days: known.open_shelf_days, freezable: known.freezable, place: known.place,
+      count: Math.max(1, Math.round(known.full_grams / known.grams_per_unit)), grams: known.full_grams, level: 'Vol'
+    });
+    if (known.track === 'aantal' && known.unit === 'stuks') p.count = 1;
+    info = 'Dit product had je al eerder, dus de instellingen zijn overgenomen. Vul de houdbaarheidsdatum in.';
+  } else {
+    try {
+      const prod = await lookupOpenFoodFacts(code);
+      if (prod) {
+        p.name = (prod.product_name_nl || prod.product_name || prod.brands || '').trim().slice(0, 100);
+        const qty = Number(prod.product_quantity);
+        const unitTxt = `${prod.product_quantity_unit || ''} ${prod.quantity || ''}`.toLowerCase();
+        const liquid = /\bml\b|\bcl\b|\bl\b|liter/.test(unitTxt);
+        if (qty > 0 && liquid) { p.track = 'niveau'; p.level = 'Vol'; p.full_grams = Math.round(qty); p.unit = 'pakken'; p.grams_per_unit = Math.round(qty); }
+        else if (qty > 0) { p.track = 'gram'; p.grams = Math.round(qty); p.full_grams = Math.round(qty); }
+        info = `Gevonden via Open Food Facts${prod.quantity ? ' (' + prod.quantity + ')' : ''}. Controleer de gegevens en vul de houdbaarheidsdatum in.`;
+        if (!p.name) info = 'Gevonden, maar zonder naam. Vul de naam zelf in.';
+      } else {
+        info = 'Dit product staat (nog) niet in Open Food Facts. Vul de gegevens zelf in; de volgende keer onthoudt Schappie het.';
+      }
+    } catch (e) {
+      info = 'Opzoeken lukte niet. Heb je internet? Vul de gegevens zelf in.';
+    }
+  }
+  state.handling = false;
+  state.edit = p; state.info = info; state.note = ''; state.error = ''; state.confirmDelete = false;
+  state.screen = 'form'; render(); window.scrollTo(0, 0);
 }
 
 // ---------- interactie ----------
@@ -353,12 +465,14 @@ document.addEventListener('click', async (e) => {
     }
     case 'level': patchProduct(id, { level: v }); break;
     case 'open':
-      state.edit = { ...p }; state.editOriginalPlace = p.place; state.note = ''; state.error = ''; state.confirmDelete = false;
+      state.edit = { ...p }; state.editOriginalPlace = p.place; state.note = ''; state.info = ''; state.error = ''; state.confirmDelete = false;
       state.screen = 'form'; render(); window.scrollTo(0, 0); break;
     case 'new':
-      state.edit = blankProduct(); state.note = ''; state.error = ''; state.confirmDelete = false;
+      state.edit = blankProduct(); state.note = ''; state.info = ''; state.error = ''; state.confirmDelete = false;
       state.screen = 'form'; render(); window.scrollTo(0, 0); break;
-    case 'back': state.screen = 'voorraad'; state.edit = null; render(); break;
+    case 'back': state.screen = 'voorraad'; state.edit = null; state.info = ''; render(); break;
+    case 'scan': startScan(); break;
+    case 'scan-cancel': await stopScan(); state.screen = 'voorraad'; render(); break;
     case 'logout': await db.auth.signOut(); break;
     case 'f-place': {
       const r = movePlace(state.edit, v);
@@ -396,6 +510,11 @@ document.addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target.dataset.form;
 
+  if (form === 'code') {
+    handleCode(document.getElementById('code').value);
+    return;
+  }
+
   if (form === 'login') {
     const email = document.getElementById('email').value.trim();
     const password = document.getElementById('pw').value;
@@ -423,7 +542,8 @@ document.addEventListener('submit', async (e) => {
       full_grams: Math.max(1, Math.round(p.full_grams || 500)),
       expires_on: p.expires_on || null, opened_on: p.opened_on || null,
       open_shelf_days: p.open_shelf_days ? Math.max(1, Math.round(p.open_shelf_days)) : null,
-      freezable: !!p.freezable
+      freezable: !!p.freezable,
+      barcode: p.barcode || null
     };
     state.busy = true; render();
     const res = p.id
@@ -432,7 +552,7 @@ document.addEventListener('submit', async (e) => {
     state.busy = false;
     if (res.error) { state.error = 'Opslaan mislukt: ' + res.error.message; render(); return; }
     toast(p.id ? 'Opgeslagen' : `${name} toegevoegd`);
-    state.tab = row.place; state.screen = 'voorraad'; state.edit = null;
+    state.tab = row.place; state.screen = 'voorraad'; state.edit = null; state.info = '';
     await loadProducts();
   }
 });
